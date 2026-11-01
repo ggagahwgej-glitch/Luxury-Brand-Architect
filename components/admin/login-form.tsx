@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { safeAdminPath } from "@/lib/utils";
 import { AlertCircle, ArrowRight, Eye, EyeOff, Loader2, Lock, Mail, ShieldCheck } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -42,7 +43,7 @@ export function OwnerLoginForm({ nextPath }: { nextPath: string }) {
         return;
       }
 
-      router.replace(nextPath.startsWith("/admin") ? nextPath : "/admin/dashboard");
+      router.replace(safeAdminPath(nextPath));
       router.refresh();
     } catch {
       setError("The server could not be reached. Check your connection and try again.");

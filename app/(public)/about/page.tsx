@@ -19,7 +19,7 @@ export async function generateMetadata(): Promise<Metadata> {
       title: `About ${settings.branding.businessName}`,
       description: settings.branding.description,
       url: `${SITE.url}/about`,
-      images: [{ url: "/seed/brand-story.jpg" }],
+      images: [{ url: "/seed/estate-aerial.jpg" }],
     },
   };
 }

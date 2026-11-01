@@ -19,10 +19,17 @@ export default async function AdminPropertiesPage({ searchParams }: { searchPara
   const page = Math.max(1, Number(params.page ?? 1) || 1);
   const pageSize = 10;
 
+  // The visibility filter is applied in the query, not after pagination —
+  // filtering the current page produced "records" counts that ignored the
+  // drafts sitting on later pages.
+  const published =
+    params.visibility === "published" ? true : params.visibility === "draft" ? false : undefined;
+
   const result = await getRepository().listProperties({
     q: params.q?.trim() || undefined,
     status: PROPERTY_SERVICES.status(params.status),
     purpose: PROPERTY_SERVICES.purpose(params.purpose),
+    published,
     includeUnpublished: true,
     availabilityOnly: false,
     sort: "newest",
@@ -30,12 +37,7 @@ export default async function AdminPropertiesPage({ searchParams }: { searchPara
     pageSize,
   });
 
-  const visible =
-    params.visibility === "published"
-      ? result.items.filter((property) => property.isPublished)
-      : params.visibility === "draft"
-        ? result.items.filter((property) => !property.isPublished)
-        : result.items;
+  const visible = result.items;
 
   return (
     <div className="space-y-5">
@@ -59,12 +61,6 @@ export default async function AdminPropertiesPage({ searchParams }: { searchPara
 
       <PropertiesTable properties={visible} />
 
-      {visible.length < result.items.length ? (
-        <p className="text-[0.68rem] text-silver/40">
-          Visibility filter hides some records on this page. Clear the filter to see every property.
-        </p>
-      ) : null}
-
       <Pagination
         page={result.page}
         pageCount={result.pageCount}
@@ -75,8 +71,10 @@ export default async function AdminPropertiesPage({ searchParams }: { searchPara
             purpose: PROPERTY_SERVICES.purpose(params.purpose) ?? "",
             page: targetPage,
           });
-          const visibility = params.visibility ? `&visibility=${params.visibility}` : "";
-          return `/admin/properties${query || visibility ? `?${query}${visibility}` : ""}`;
+          const search = new URLSearchParams(query);
+          if (params.visibility) search.set("visibility", params.visibility);
+          const qs = search.toString();
+          return `/admin/properties${qs ? `?${qs}` : ""}`;
         }}
       />
     </div>

@@ -220,3 +220,10 @@ export const ADMIN_NAV = [
   { href: "/admin/media", label: "Media Library", icon: "Images" },
   { href: "/admin/settings", label: "Website Settings", icon: "Settings2" },
 ] as const;
+
+/**
+ * Business timezone for every displayed date/time. Kept here (not in
+ * lib/config/site) so date formatting can be imported by client components
+ * without pulling server environment code into the browser bundle.
+ */
+export const SITE_TIME_ZONE = "Asia/Kolkata";

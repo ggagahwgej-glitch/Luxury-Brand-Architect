@@ -30,14 +30,16 @@ import type {
   SiteSettingsPatch,
   TypeFacet,
 } from "@/lib/types";
-import { clamp, slugify } from "@/lib/utils";
+import { clamp, isUuid, slugify } from "@/lib/utils";
 
 const PROPERTY_SELECT = "*, property_media(*)";
 const DEFAULT_PAGE_SIZE = 9;
 const MAX_PAGE_SIZE = 48;
 
 function escapeSearch(value: string) {
-  return value.replace(/[%,()*\\]/g, " ").trim();
+  // Commas separate conditions and quotes delimit values inside PostgREST's
+  // `.or()` grammar, so they are stripped before the term is placed in a URL.
+  return value.replace(/[%,()*\\"'"]/g, " ").trim();
 }
 
 function fail(context: string, error: { message: string } | null): never {
@@ -64,7 +66,10 @@ function applyFilters<
       : ["available", "under_offer"];
 
   let next = builder;
-  if (query.includeUnpublished) {
+  if (query.published !== undefined) {
+    // Explicit draft/published view (Owner Studio).
+    next = next.eq("is_published", query.published) as T;
+  } else if (query.includeUnpublished) {
     // service-role reads include drafts; never force the published flag
   } else {
     next = next.eq("is_published", true) as T;
@@ -78,11 +83,11 @@ function applyFilters<
   if (query.maxPrice !== undefined) next = next.lte("price", query.maxPrice) as T;
   if (query.minBedrooms !== undefined) next = next.gte("bedrooms", query.minBedrooms) as T;
   if (query.minBathrooms !== undefined) next = next.gte("bathrooms", query.minBathrooms) as T;
-  if (query.minArea !== undefined) {
-    const term = `built_up_area.gte.${query.minArea},plot_area.gte.${query.minArea}`;
-    next = next.or(term) as T;
-  }
-  if (query.maxArea !== undefined) next = next.lte("built_up_area", query.maxArea) as T;
+  // area_display is generated as coalesce(built_up_area, plot_area, carpet_area, 0)
+  // in 0001_initial_schema.sql, so min/max area compare the same value the
+  // public UI shows instead of only the built-up column.
+  if (query.minArea !== undefined) next = next.gte("area_display", query.minArea) as T;
+  if (query.maxArea !== undefined) next = next.lte("area_display", query.maxArea) as T;
   if (query.q) {
     const term = escapeSearch(query.q);
     if (term) {
@@ -101,7 +106,7 @@ function applySort<T extends { order: Function }>(builder: T, sort: PropertyQuer
     case "price_desc":
       return builder.order("price", { ascending: false }) as T;
     case "area_desc":
-      return builder.order("built_up_area", { ascending: false, nullsFirst: false }) as T;
+      return builder.order("area_display", { ascending: false, nullsFirst: false }) as T;
     case "featured":
       return builder
         .order("is_featured", { ascending: false })
@@ -128,20 +133,38 @@ export class SupabaseRepository implements Repository {
     const from = (page - 1) * pageSize;
     const client = query.includeUnpublished ? this.admin : this.reader;
 
-    const builder = applySort(
-      applyFilters(client.from("properties").select(PROPERTY_SELECT, { count: "exact" }), query),
-      query.sort,
-    ).range(from, from + pageSize - 1);
+    const run = async (offset: number) => {
+      const builder = applySort(
+        applyFilters(client.from("properties").select(PROPERTY_SELECT, { count: "exact" }), query),
+        query.sort,
+      ).range(offset, offset + pageSize - 1);
+      const response = await builder;
+      if (response.error) fail("Could not load properties", response.error);
+      return response;
+    };
 
-    const { data, error, count } = await builder;
-    if (error) fail("Could not load properties", error);
-    const total = count ?? 0;
+    const first = await run(from);
+    const total = first.count ?? 0;
+    const pageCount = Math.max(1, Math.ceil(total / pageSize));
+
+    // Requesting page 99 of a 2-page register must not render "no results".
+    if (page > pageCount) {
+      const clamped = await run((pageCount - 1) * pageSize);
+      return {
+        items: ((clamped.data ?? []) as unknown as PropertyRow[]).map(toProperty),
+        total: clamped.count ?? total,
+        page: pageCount,
+        pageSize,
+        pageCount,
+      };
+    }
+
     return {
-      items: ((data ?? []) as unknown as PropertyRow[]).map(toProperty),
+      items: ((first.data ?? []) as unknown as PropertyRow[]).map(toProperty),
       total,
       page,
       pageSize,
-      pageCount: Math.max(1, Math.ceil(total / pageSize)),
+      pageCount,
     };
   }
 
@@ -157,6 +180,9 @@ export class SupabaseRepository implements Repository {
   }
 
   async getPropertyById(id: string) {
+    // `id` can come straight from a URL — never let a malformed value reach a
+    // uuid column, which would raise a 500 instead of a clean "not found".
+    if (!isUuid(id)) return null;
     const { data, error } = await this.admin
       .from("properties")
       .select(PROPERTY_SELECT)
@@ -167,16 +193,36 @@ export class SupabaseRepository implements Repository {
   }
 
   async getRelatedProperties(property: Property, limit: number) {
-    const { data, error } = await this.reader
-      .from("properties")
-      .select(PROPERTY_SELECT)
-      .eq("is_published", true)
-      .neq("id", property.id)
-      .or(`purpose.eq.${property.purpose},location.eq.${property.location}`)
-      .order("created_at", { ascending: false })
-      .limit(limit);
-    if (error) fail("Could not load related properties", error);
-    return ((data ?? []) as unknown as PropertyRow[]).map(toProperty);
+    // Two indexed queries instead of `.or("purpose.eq.…,location.eq.…")`:
+    // a location such as "Guwahati, Assam" contains a comma, which PostgREST
+    // would parse as a filter separator and reject.
+    const base = () =>
+      this.reader
+        .from("properties")
+        .select(PROPERTY_SELECT)
+        .eq("is_published", true)
+        .neq("id", property.id)
+        .order("created_at", { ascending: false })
+        .limit(limit);
+
+    const [byLocation, byPurpose] = await Promise.all([
+      base().eq("location", property.location),
+      base().eq("purpose", property.purpose),
+    ]);
+    if (byLocation.error) fail("Could not load related properties", byLocation.error);
+    if (byPurpose.error) fail("Could not load related properties", byPurpose.error);
+
+    const seen = new Set<string>();
+    const merged: Property[] = [];
+    for (const row of [
+      ...((byLocation.data ?? []) as unknown as PropertyRow[]),
+      ...((byPurpose.data ?? []) as unknown as PropertyRow[]),
+    ]) {
+      if (seen.has(row.id)) continue;
+      seen.add(row.id);
+      merged.push(toProperty(row));
+    }
+    return merged.slice(0, limit);
   }
 
   async listFeatured(limit: number) {
@@ -196,7 +242,7 @@ export class SupabaseRepository implements Repository {
       .from("properties")
       .select("location")
       .eq("is_published", true)
-      .eq("status", "available");
+      .in("status", ["available", "under_offer"]);
     if (error) fail("Could not load locations", error);
     const counts = new Map<string, number>();
     for (const row of (data ?? []) as { location: string }[]) {
@@ -267,6 +313,19 @@ export class SupabaseRepository implements Repository {
     const existing = (existingRows ?? []) as PropertyMediaRow[];
     const wanted = input.media;
     const wantedUrls = new Set(wanted.map((m) => m.url));
+
+    // `property_media_single_cover_idx` is a partial unique index on
+    // (property_id) where is_cover — moving the cover from A to B in one pass
+    // would briefly create two covers, so all covers are cleared first.
+    if (existing.some((row) => row.is_cover)) {
+      const { error: clearError } = await this.admin
+        .from("property_media")
+        .update({ is_cover: false })
+        .eq("property_id", propertyId)
+        .eq("is_cover", true);
+      if (clearError) return clearError.message;
+      for (const row of existing) row.is_cover = false;
+    }
 
     const removals = existing.filter((row) => !wantedUrls.has(row.url));
     if (removals.length) {
@@ -392,6 +451,20 @@ export class SupabaseRepository implements Repository {
       .filter((value): value is string => Boolean(value));
   }
 
+  async findReferencedStoragePaths(paths: string[]): Promise<Set<string>> {
+    if (!paths.length) return new Set();
+    const { data, error } = await this.admin
+      .from("property_media")
+      .select("storage_path")
+      .in("storage_path", paths);
+    if (error) fail("Could not verify stored media references", error);
+    return new Set(
+      ((data ?? []) as { storage_path: string | null }[])
+        .map((row) => row.storage_path)
+        .filter((value): value is string => Boolean(value)),
+    );
+  }
+
   async listAllMedia(): Promise<MediaLibraryItem[]> {
     const { data, error } = await this.admin
       .from("property_media")
@@ -415,6 +488,7 @@ export class SupabaseRepository implements Repository {
   }
 
   async deleteMedia(mediaId: string) {
+    if (!isUuid(mediaId)) return null;
     const { data, error } = await this.admin
       .from("property_media")
       .select("*")
@@ -451,8 +525,11 @@ export class SupabaseRepository implements Repository {
         .eq("id", input.propertyId)
         .maybeSingle();
       if (error) fail("Could not verify the property", error);
-      if (!data) throw new Error("The selected property is no longer available.");
-      propertyTitle = (data as { title: string }).title;
+      const record = data as { title: string; is_published: boolean } | null;
+      // A public enquiry may only be associated with a live listing — never
+      // with a draft, whose title is not public.
+      if (!record || !record.is_published) throw new Error("The selected property is no longer available.");
+      propertyTitle = record.title;
     }
 
     const { data, error } = await this.admin
@@ -490,21 +567,40 @@ export class SupabaseRepository implements Repository {
         );
       }
     }
-    const { data, error, count } = await builder
-      .order("created_at", { ascending: false })
-      .range(from, from + pageSize - 1);
-    if (error) fail("Could not load inquiries", error);
-    const total = count ?? 0;
+    const run = async (offset: number) => {
+      const response = await builder
+        .order("created_at", { ascending: false })
+        .range(offset, offset + pageSize - 1);
+      if (response.error) fail("Could not load inquiries", response.error);
+      return response;
+    };
+
+    const first = await run(from);
+    const total = first.count ?? 0;
+    const pageCount = Math.max(1, Math.ceil(total / pageSize));
+
+    if (page > pageCount) {
+      const clamped = await run((pageCount - 1) * pageSize);
+      return {
+        items: ((clamped.data ?? []) as unknown as InquiryRow[]).map(toInquiry),
+        total: clamped.count ?? total,
+        page: pageCount,
+        pageSize,
+        pageCount,
+      };
+    }
+
     return {
-      items: ((data ?? []) as unknown as InquiryRow[]).map(toInquiry),
+      items: ((first.data ?? []) as unknown as InquiryRow[]).map(toInquiry),
       total,
       page,
       pageSize,
-      pageCount: Math.max(1, Math.ceil(total / pageSize)),
+      pageCount,
     };
   }
 
   async getInquiry(id: string) {
+    if (!isUuid(id)) return null;
     const { data, error } = await this.admin.from("inquiries").select("*").eq("id", id).maybeSingle();
     if (error) fail("Could not load inquiry", error);
     return data ? toInquiry(data as unknown as InquiryRow) : null;

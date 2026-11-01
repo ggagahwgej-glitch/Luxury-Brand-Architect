@@ -85,6 +85,55 @@ describe("local provider", () => {
     expect(pageOne.pageCount).toBeGreaterThan(1);
   });
 
+  it("clamps a page number beyond the last page instead of returning nothing", async () => {
+    // Regression: /properties?page=99 used to render "The register is being
+    // prepared" even though the register has listings.
+    const first = await repository.listProperties({ page: 1, pageSize: 3 });
+    const overshoot = await repository.listProperties({ page: 999, pageSize: 3 });
+    expect(overshoot.page).toBe(first.pageCount);
+    expect(overshoot.items.length).toBeGreaterThan(0);
+    expect(overshoot.total).toBe(first.total);
+  });
+
+  it("filters Owner Studio views by published state before pagination", async () => {
+    const drafts = await repository.listProperties({
+      includeUnpublished: true,
+      availabilityOnly: false,
+      published: false,
+      pageSize: 50,
+    });
+    expect(drafts.items.every((property) => !property.isPublished)).toBe(true);
+
+    const live = await repository.listProperties({
+      includeUnpublished: true,
+      availabilityOnly: false,
+      published: true,
+      pageSize: 50,
+    });
+    expect(live.items.every((property) => property.isPublished)).toBe(true);
+  });
+
+  it("never links a public enquiry to an unpublished listing", async () => {
+    const drafts = await repository.listProperties({
+      includeUnpublished: true,
+      availabilityOnly: false,
+      published: false,
+      pageSize: 50,
+    });
+    const draft = drafts.items[0];
+    expect(draft).toBeDefined();
+    await expect(
+      repository.createInquiry({
+        propertyId: draft!.id,
+        name: "Draft Probe",
+        phone: "+91 90000 00000",
+        email: "draft.probe@example.com",
+        message: "This enquiry should not attach itself to an unpublished listing.",
+        intent: "information",
+      }),
+    ).rejects.toThrow(/no longer available/i);
+  });
+
   it("creates, reads, updates, duplicates and deletes a property", async () => {
     const created = await repository.createProperty(baseInput);
     expect(created.slug).toBe("qa-test-residence");

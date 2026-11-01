@@ -23,7 +23,14 @@ export function PropertyGallery({ images, title, fallbackAlt }: GalleryProps) {
   const closeRef = useRef<HTMLButtonElement | null>(null);
 
   const count = images.length;
+  // Navigating between two listings keeps this component mounted, so the
+  // selected index can point past the end of the shorter gallery.
+  const current = Math.min(active, Math.max(0, count - 1));
   const alt = (index: number) => images[index]?.alt?.trim() || `${title} — ${fallbackAlt}`;
+
+  useEffect(() => {
+    setActive((value) => (count && value > count - 1 ? 0 : value));
+  }, [count]);
 
   const go = useCallback(
     (direction: number) => {
@@ -88,7 +95,7 @@ export function PropertyGallery({ images, title, fallbackAlt }: GalleryProps) {
               sizes="(min-width: 1280px) 70vw, 100vw"
               className={cn(
                 "object-cover transition-opacity duration-700 ease-luxe",
-                index === active ? "opacity-100" : "pointer-events-none opacity-0",
+                index === current ? "opacity-100" : "pointer-events-none opacity-0",
               )}
             />
           ))}
@@ -123,7 +130,7 @@ export function PropertyGallery({ images, title, fallbackAlt }: GalleryProps) {
                 <ChevronRight aria-hidden="true" className="h-5 w-5" />
               </button>
               <p className="absolute bottom-4 right-4 border border-white/15 bg-imperial/70 px-2.5 py-1 text-[0.62rem] tracking-[0.18em] text-ivory/80 backdrop-blur">
-                {String(active + 1).padStart(2, "0")} / {String(count).padStart(2, "0")}
+                {String(current + 1).padStart(2, "0")} / {String(count).padStart(2, "0")}
               </p>
             </>
           ) : null}
@@ -137,10 +144,10 @@ export function PropertyGallery({ images, title, fallbackAlt }: GalleryProps) {
                 type="button"
                 onClick={() => setActive(index)}
                 aria-label={`Show image ${index + 1}`}
-                aria-current={index === active}
+                aria-current={index === current}
                 className={cn(
                   "relative h-16 w-24 shrink-0 overflow-hidden border transition-all duration-300 sm:h-20 sm:w-32",
-                  index === active
+                  index === current
                     ? "border-gold opacity-100"
                     : "border-white/10 opacity-60 hover:border-white/30 hover:opacity-100",
                 )}
@@ -161,7 +168,7 @@ export function PropertyGallery({ images, title, fallbackAlt }: GalleryProps) {
         >
           <div className="flex items-center justify-between border-b border-white/[0.08] px-5 py-4">
             <p className="text-[0.66rem] uppercase tracking-[0.24em] text-silver/60">
-              {title} · {String(active + 1).padStart(2, "0")} / {String(count).padStart(2, "0")}
+              {title} · {String(current + 1).padStart(2, "0")} / {String(count).padStart(2, "0")}
             </p>
             <button
               ref={closeRef}
@@ -187,8 +194,8 @@ export function PropertyGallery({ images, title, fallbackAlt }: GalleryProps) {
             }}
           >
             <Image
-              src={images[active]!.url}
-              alt={alt(active)}
+              src={images[current]?.url ?? images[0]!.url}
+              alt={alt(current)}
               fill
               sizes="100vw"
               className="object-contain p-4 sm:p-8"
@@ -225,7 +232,7 @@ export function PropertyGallery({ images, title, fallbackAlt }: GalleryProps) {
                 aria-label={`Show image ${index + 1}`}
                 className={cn(
                   "relative h-14 w-20 shrink-0 overflow-hidden border transition-all sm:h-16 sm:w-24",
-                  index === active ? "border-gold" : "border-white/10 opacity-60 hover:opacity-100",
+                  index === current ? "border-gold" : "border-white/10 opacity-60 hover:opacity-100",
                 )}
               >
                 <Image src={image.url} alt="" fill sizes="96px" className="object-cover" />

@@ -46,6 +46,7 @@ export default async function PropertiesPage({ searchParams }: PageProps) {
     repository.listLocationFacets(),
   ]);
 
+
   const heading = filters.type
     ? `${PROPERTY_TYPE_LABELS[filters.type]}${filters.purpose ? ` ${PURPOSE_LABELS[filters.purpose].toLowerCase()}` : ""}`
     : "The Collection";

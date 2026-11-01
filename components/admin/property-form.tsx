@@ -30,6 +30,7 @@ import {
 } from "@/lib/constants";
 import { AREA_UNITS, PROPERTY_STATUSES, PROPERTY_TYPES } from "@/lib/types";
 import type { AreaUnit, Property, PropertyStatus, PropertyType, Purpose } from "@/lib/types";
+import { formatDateTime } from "@/lib/format";
 import { slugify } from "@/lib/utils";
 import { cn } from "@/lib/utils";
 
@@ -361,7 +362,7 @@ export function PropertyForm({ property }: { property?: Property }) {
           </h1>
           <p className="mt-1.5 text-[0.74rem] text-silver/50">
             {property
-              ? `Last updated ${new Date(property.updatedAt).toLocaleString("en-GB")}`
+              ? `Last updated ${formatDateTime(property.updatedAt)}`
               : "Complete the required fields, add imagery, then publish."}
           </p>
         </div>

@@ -1,4 +1,4 @@
-import { AREA_UNIT_LABELS } from "@/lib/constants";
+import { AREA_UNIT_LABELS, SITE_TIME_ZONE } from "@/lib/constants";
 import type { AreaUnit, Property } from "@/lib/types";
 
 const CURRENCY_LOCALE: Record<string, string> = {
@@ -47,6 +47,7 @@ export function formatDate(value: string | Date, opts: Intl.DateTimeFormatOption
     day: "2-digit",
     month: "short",
     year: "numeric",
+    timeZone: SITE_TIME_ZONE,
     ...opts,
   }).format(date);
 }

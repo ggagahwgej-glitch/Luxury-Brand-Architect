@@ -18,6 +18,12 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     return jsonOk({ property: copy });
   } catch (error) {
     console.error("[admin/properties] duplicate failed:", error);
-    return jsonError(error instanceof Error ? error.message : "The property could not be duplicated.", 500);
+    const message = error instanceof Error ? error.message : "";
+    return jsonError(
+      /not found/i.test(message)
+        ? "That property no longer exists."
+        : "The property could not be duplicated right now. Please try again.",
+      /not found/i.test(message) ? 404 : 500,
+    );
   }
 }

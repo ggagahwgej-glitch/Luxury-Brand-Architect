@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import { inquirySchema } from "@/lib/validation/inquiry";
 import { loginSchema } from "@/lib/validation/auth";
 import { propertyInputSchema } from "@/lib/validation/property";
-import { slugify } from "@/lib/utils";
+import { isUuid, safeAdminPath, slugify } from "@/lib/utils";
+import { activeFilterCount, parseListingParams } from "@/lib/search-params";
 import { whatsappLink, formatArea, formatCurrency } from "@/lib/format";
 
 const baseProperty = {
@@ -93,5 +94,44 @@ describe("formatting and helpers", () => {
   it("builds WhatsApp links", () => {
     expect(whatsappLink("+91 98640 21000", "Hello")).toBe("https://wa.me/919864021000?text=Hello");
     expect(whatsappLink("")).toBeNull();
+  });
+});
+
+describe("search params", () => {
+  it("counts a max-area-only filter as an active filter", () => {
+    // Regression: a maxArea-only URL rendered the "register is empty" copy.
+    const filters = parseListingParams({ maxArea: "1200" });
+    expect(filters.maxArea).toBe(1200);
+    expect(activeFilterCount(filters)).toBe(1);
+  });
+
+  it("ignores malformed numbers and unknown enum values", () => {
+    const filters = parseListingParams({ page: "abc", minPrice: "9e999", sort: "bogus", type: "castle" });
+    expect(filters.page).toBe(1);
+    expect(filters.minPrice).toBeNull();
+    expect(filters.sort).toBe("newest");
+    expect(filters.type).toBe("");
+  });
+});
+
+describe("helpers", () => {
+  it("never produces a slug with a trailing hyphen", () => {
+    const long = slugify(`${"a".repeat(70)} residence`);
+    expect(long.endsWith("-")).toBe(false);
+    expect(long).toMatch(/^[a-z0-9]+(?:-[a-z0-9]+)*$/);
+  });
+
+  it("only accepts UUID-shaped identifiers", () => {
+    expect(isUuid("2e53bb5e-4db4-488e-860c-011010d050c8")).toBe(true);
+    expect(isUuid("abc")).toBe(false);
+    expect(isUuid("../../etc/passwd")).toBe(false);
+  });
+
+  it("confines post-login redirects to the Studio", () => {
+    expect(safeAdminPath("/admin/properties")).toBe("/admin/properties");
+    expect(safeAdminPath("//evil.example/admin")).toBe("/admin/dashboard");
+    expect(safeAdminPath("https://evil.example")).toBe("/admin/dashboard");
+    expect(safeAdminPath("/settings")).toBe("/admin/dashboard");
+    expect(safeAdminPath(undefined)).toBe("/admin/dashboard");
   });
 });

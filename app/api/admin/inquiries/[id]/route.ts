@@ -29,7 +29,7 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
     return jsonOk({ status: parsed.data.status });
   } catch (error) {
     console.error("[admin/inquiries] update failed:", error);
-    return jsonError(error instanceof Error ? error.message : "The inquiry could not be updated.", 500);
+    return jsonError("The inquiry could not be updated right now. Please try again.", 500);
   }
 }
 
@@ -49,6 +49,6 @@ export async function DELETE(request: Request, context: { params: Promise<{ id: 
     return jsonOk({ deleted: true });
   } catch (error) {
     console.error("[admin/inquiries] delete failed:", error);
-    return jsonError(error instanceof Error ? error.message : "The inquiry could not be deleted.", 500);
+    return jsonError("The inquiry could not be deleted right now. Please try again.", 500);
   }
 }

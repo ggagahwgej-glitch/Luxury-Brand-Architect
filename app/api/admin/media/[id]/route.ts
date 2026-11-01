@@ -14,15 +14,22 @@ export async function DELETE(request: Request, context: { params: Promise<{ id: 
 
   const { id } = await context.params;
   try {
-    const result = await getRepository().deleteMedia(id);
+    const repository = getRepository();
+    const result = await repository.deleteMedia(id);
     if (!result) return jsonError("That media item no longer exists.", 404);
-    await removeStoredObject(result.storagePath);
+
+    // Duplicated listings share the same stored object, so the file is only
+    // removed once no remaining media row references it.
+    if (result.storagePath) {
+      const stillReferenced = await repository.findReferencedStoragePaths([result.storagePath]);
+      if (!stillReferenced.has(result.storagePath)) await removeStoredObject(result.storagePath);
+    }
     revalidatePath("/");
     revalidatePath("/properties");
     revalidatePath("/admin/media");
     return jsonOk({ deleted: true });
   } catch (error) {
     console.error("[admin/media] delete failed:", error);
-    return jsonError(error instanceof Error ? error.message : "The media item could not be deleted.", 500);
+    return jsonError("The media item could not be deleted right now. Please try again.", 500);
   }
 }

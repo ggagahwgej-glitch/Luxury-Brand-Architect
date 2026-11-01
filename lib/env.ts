@@ -27,16 +27,17 @@ export const isSupabaseConfigured = Boolean(supabaseUrl && supabaseAnonKey && su
  *  - otherwise Supabase is used when fully configured;
  *  - the local preview provider is never allowed in a production build.
  */
+export function localProviderAllowed() {
+  // Outside a production build the preview provider is always available.
+  // Inside one it must be opted into explicitly, so a deployment that simply
+  // forgot its environment variables fails loudly instead of quietly serving
+  // (and writing) demo data from the local JSON store.
+  return process.env.NODE_ENV !== "production" || read("ALLOW_LOCAL_PROVIDER") === "1";
+}
+
 export function resolveDataProvider(): DataProviderName {
   const requested = read("DATA_PROVIDER");
-  if (requested === "local") {
-    if (process.env.NODE_ENV === "production" && read("ALLOW_LOCAL_PROVIDER") !== "1") {
-      throw new Error(
-        "DATA_PROVIDER=local is a development-only preview provider and is blocked in production builds. Configure Supabase instead.",
-      );
-    }
-    return "local";
-  }
+
   if (requested === "supabase") {
     if (!isSupabaseConfigured) {
       throw new Error(
@@ -45,7 +46,19 @@ export function resolveDataProvider(): DataProviderName {
     }
     return "supabase";
   }
-  return isSupabaseConfigured ? "supabase" : "local";
+
+  if (requested === "local" || !isSupabaseConfigured) {
+    if (!localProviderAllowed()) {
+      throw new Error(
+        requested === "local"
+          ? "DATA_PROVIDER=local is a development-only preview provider and is blocked in production builds. Configure Supabase instead."
+          : "No data provider is configured. Set NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY and SUPABASE_SERVICE_ROLE_KEY (see README.md).",
+      );
+    }
+    return "local";
+  }
+
+  return "supabase";
 }
 
 export function assertAdminSecret() {
@@ -58,8 +71,17 @@ export function assertAdminSecret() {
   return secret;
 }
 
-export const localOwnerCredentials = {
-  email: read("LOCAL_OWNER_EMAIL") ?? "owner@aurumestates.com",
-  password: read("LOCAL_OWNER_PASSWORD") ?? "RoyalAccess2026!",
-  code: read("LOCAL_OWNER_CODE") ?? "741852963147",
-};
+/**
+ * Credentials for the development preview provider.
+ *
+ * There are deliberately no fallback values: a checkout with no `.env.local`
+ * must never accept a password that is visible in the source tree. Returns
+ * null until all three variables are supplied (see `.env.example`).
+ */
+export function localOwnerCredentials(): { email: string; password: string; code: string } | null {
+  const email = read("LOCAL_OWNER_EMAIL");
+  const password = read("LOCAL_OWNER_PASSWORD");
+  const code = read("LOCAL_OWNER_CODE");
+  if (!email || !password || !code) return null;
+  return { email, password, code };
+}

@@ -1,10 +1,11 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { redirect } from "next/navigation";
 import { ArrowRight } from "lucide-react";
 import { getRepository, getSiteSettings } from "@/lib/data";
 import { PageHero } from "@/components/layout/page-hero";
 import { PropertyExplorer } from "@/components/property/property-explorer";
-import { parseListingParams, toPropertyQuery, type RawSearchParams } from "@/lib/search-params";
+import { filtersToSearchParams, parseListingParams, toPropertyQuery, type RawSearchParams } from "@/lib/search-params";
 import { SITE } from "@/lib/config/site";
 
 type PageProps = { searchParams: Promise<RawSearchParams> };
@@ -34,6 +35,13 @@ export default async function RentPage({ searchParams }: PageProps) {
     repository.listProperties(toPropertyQuery(filters, { purpose: "rent" })),
     repository.listLocationFacets(),
   ]);
+
+  // Keep an over-long page number on a real page of results. The locked
+  // purpose is implied by the route, so it is not repeated in the URL.
+  if (result.total > 0 && filters.page > result.pageCount) {
+    const query = filtersToSearchParams({ ...filters, purpose: "", page: result.pageCount });
+    redirect(`/rent${query ? `?${query}` : ""}`);
+  }
 
   return (
     <>

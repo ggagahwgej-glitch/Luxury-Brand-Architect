@@ -26,6 +26,6 @@ export async function PUT(request: Request) {
     return jsonOk({ settings });
   } catch (error) {
     console.error("[admin/settings] save failed:", error);
-    return jsonError(error instanceof Error ? error.message : "Settings could not be saved.", 500);
+    return jsonError("Settings could not be saved right now. Please try again.", 500);
   }
 }

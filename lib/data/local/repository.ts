@@ -57,6 +57,7 @@ function filterProperties(properties: Property[], query: PropertyQuery) {
   const filtered = properties.filter((property) => {
     if (!query.includeUnpublished && !property.isPublished) return false;
     if (query.includeUnpublished === false && !property.isPublished) return false;
+    if (query.published !== undefined && property.isPublished !== query.published) return false;
     if (statuses.length && !statuses.includes(property.status)) return false;
     if (query.purpose && property.purpose !== query.purpose) return false;
     if (query.propertyType && property.propertyType !== query.propertyType) return false;
@@ -92,13 +93,17 @@ function filterProperties(properties: Property[], query: PropertyQuery) {
   });
 
   const total = sorted.length;
-  const start = (page - 1) * pageSize;
+  const pageCount = Math.max(1, Math.ceil(total / pageSize));
+  // A page number beyond the last page must not render an empty "no results"
+  // screen when the register does have matches — clamp to the last page.
+  const safePage = Math.min(page, pageCount);
+  const start = (safePage - 1) * pageSize;
   return {
     items: sorted.slice(start, start + pageSize).map(clone),
     total,
-    page,
+    page: safePage,
     pageSize,
-    pageCount: Math.max(1, Math.ceil(total / pageSize)),
+    pageCount,
   } satisfies Paginated<Property>;
 }
 
@@ -231,6 +236,7 @@ export class LocalRepository implements Repository {
     const counts = new Map<string, number>();
     for (const property of db.properties) {
       if (!property.isPublished) continue;
+      if (property.status !== "available" && property.status !== "under_offer") continue;
       counts.set(property.location, (counts.get(property.location) ?? 0) + 1);
     }
     return [...counts.entries()]
@@ -331,6 +337,21 @@ export class LocalRepository implements Repository {
     return (property?.media ?? []).map((m) => m.storagePath).filter((v): v is string => Boolean(v));
   }
 
+  async findReferencedStoragePaths(paths: string[]): Promise<Set<string>> {
+    if (!paths.length) return new Set();
+    const db = await readDatabase();
+    const wanted = new Set(paths);
+    const referenced = new Set<string>();
+    for (const property of db.properties) {
+      for (const media of property.media) {
+        // Duplicated listings share the same stored object, so a path is only
+        // safe to delete once no row anywhere points at it.
+        if (media.storagePath && wanted.has(media.storagePath)) referenced.add(media.storagePath);
+      }
+    }
+    return referenced;
+  }
+
   async listAllMedia(): Promise<MediaLibraryItem[]> {
     const db = await readDatabase();
     return db.properties.flatMap((property) =>
@@ -358,7 +379,9 @@ export class LocalRepository implements Repository {
 
   async createInquiry(input: InquiryInput): Promise<Inquiry> {
     return withDatabase((db) => {
-      const property = input.propertyId ? db.properties.find((p) => p.id === input.propertyId) : undefined;
+      const property = input.propertyId
+        ? db.properties.find((p) => p.id === input.propertyId && p.isPublished)
+        : undefined;
       if (input.propertyId && !property) {
         throw new Error("The selected property is no longer available.");
       }
@@ -399,12 +422,14 @@ export class LocalRepository implements Repository {
       })
       .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
     const total = filtered.length;
+    const pageCount = Math.max(1, Math.ceil(total / pageSize));
+    const safePage = Math.min(page, pageCount);
     return {
-      items: filtered.slice((page - 1) * pageSize, page * pageSize).map(clone),
+      items: filtered.slice((safePage - 1) * pageSize, safePage * pageSize).map(clone),
       total,
-      page,
+      page: safePage,
       pageSize,
-      pageCount: Math.max(1, Math.ceil(total / pageSize)),
+      pageCount,
     };
   }
 

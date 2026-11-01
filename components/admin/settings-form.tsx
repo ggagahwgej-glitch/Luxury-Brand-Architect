@@ -123,10 +123,24 @@ export function SettingsForm({ settings }: { settings: SiteSettings }) {
     setStatus("idle");
   }
 
+  const [notice, setNotice] = useState("");
+
   async function save() {
     setStatus("saving");
     setError("");
+    setNotice("");
     setFieldErrors({});
+
+    // Half-written testimonial cards must not block the rest of the settings:
+    // empty drafts are dropped instead of failing validation for every tab.
+    const completeTestimonials = form.testimonials.filter(
+      (item) => item.quote.trim().length >= 10 && item.author.trim().length >= 2,
+    );
+    const droppedTestimonials = form.testimonials.length - completeTestimonials.length;
+    if (droppedTestimonials > 0) {
+      setForm((current) => ({ ...current, testimonials: completeTestimonials }));
+    }
+
     try {
       const response = await fetch("/api/admin/settings", {
         method: "PUT",
@@ -138,7 +152,7 @@ export function SettingsForm({ settings }: { settings: SiteSettings }) {
           website: form.website,
           seo: form.seo,
           design: form.design,
-          testimonials: form.testimonials,
+          testimonials: completeTestimonials,
         }),
       });
       const payload = (await response.json().catch(() => null)) as
@@ -147,10 +161,22 @@ export function SettingsForm({ settings }: { settings: SiteSettings }) {
       if (!response.ok || !payload?.ok) {
         setStatus("error");
         setError(payload?.error ?? "Settings could not be saved.");
-        setFieldErrors(payload?.fieldErrors ?? {});
+        const errors = payload?.fieldErrors ?? {};
+        setFieldErrors(errors);
+        // Jump to the tab that owns the first invalid field, otherwise the
+        // highlighted input is hidden behind another tab.
+        const section = Object.keys(errors)[0]?.split(".")[0];
+        if (section && TABS.some((tabItem) => tabItem.id === section)) {
+          setTab(section as TabId);
+        }
         return;
       }
       if (payload.settings) setForm(payload.settings);
+      if (droppedTestimonials > 0) {
+        setNotice(
+          `${droppedTestimonials} incomplete testimonial${droppedTestimonials === 1 ? " was" : "s were"} skipped — a quote needs 10+ characters and an author name.`,
+        );
+      }
       setStatus("saved");
       router.refresh();
     } catch {
@@ -207,7 +233,7 @@ export function SettingsForm({ settings }: { settings: SiteSettings }) {
       {status === "saved" ? (
         <div role="status" className="flex items-center gap-2 border border-success/30 bg-success/[0.07] px-4 py-3 text-[0.8rem] text-[#8fd4b8]">
           <Check aria-hidden="true" className="h-4 w-4" />
-          Settings saved — the public website now reflects these changes.
+          {notice || "Settings saved — the public website now reflects these changes."}
         </div>
       ) : null}
 

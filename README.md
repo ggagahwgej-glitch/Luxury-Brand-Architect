@@ -12,6 +12,8 @@ cp .env.example .env.local     # then set DATA_PROVIDER=local below
 npm run dev                    # http://localhost:3000
 ```
 
+There are **no fallback credentials in the source tree** — the preview provider refuses to sign anyone in until all three `LOCAL_OWNER_*` values exist.
+
 Minimum `.env.local` for the offline preview:
 
 ```env
@@ -23,7 +25,7 @@ LOCAL_OWNER_PASSWORD=RoyalAccess2026!
 LOCAL_OWNER_CODE=741852963147
 ```
 
-The local provider writes to `.data/db.json` (git-ignored) and is refused inside a production build unless `ALLOW_LOCAL_PROVIDER=1` is set, so demo data cannot leak into a real deployment.
+The local provider writes to `.data/db.json` (git-ignored). Inside a production build it is refused unless `ALLOW_LOCAL_PROVIDER=1` is set, and a production build with *no* provider configured now fails fast with a clear message instead of quietly serving demo data.
 
 - Public site: `/`
 - Studio: `/admin/login` (email + password + 12-digit code)
@@ -44,7 +46,7 @@ The local provider writes to `.data/db.json` (git-ignored) and is refused inside
 | --- | --- |
 | `npm run dev` / `build` / `start` | Next.js on `0.0.0.0:3000` |
 | `npm run typecheck` | `tsc --noEmit` (strict) |
-| `npm test` | Vitest suite (24 tests) |
+| `npm test` | Vitest suite (37 tests) |
 | `npm run owner:hash <code> <email>` | bcrypt hash + SQL for `owner_security` |
 | `npm run storage:prune [-- --apply]` | Report/remove orphaned media files |
 | `npm run seed:check` | Verify env, tables, settings row, owner, bucket, anon-leak guards |

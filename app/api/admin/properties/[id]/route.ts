@@ -31,10 +31,15 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
     revalidatePath(`/properties/${property.slug}`);
     return jsonOk({ property });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "The property could not be updated.";
+    const message = error instanceof Error ? error.message : "";
     console.error("[admin/properties] update failed:", error);
     const duplicate = /duplicate key|unique/i.test(message);
-    return jsonError(duplicate ? "A property with that web address (slug) already exists." : message, 500);
+    return jsonError(
+      duplicate
+        ? "A property with that web address (slug) already exists."
+        : "Your changes could not be saved. Please review the form and try again.",
+      duplicate ? 409 : 500,
+    );
   }
 }
 
@@ -53,8 +58,13 @@ export async function DELETE(request: Request, context: { params: Promise<{ id: 
     // database record and finally the files so nothing is orphaned.
     const storagePaths = await repository.getStoragePathsForProperty(id);
     await repository.deleteProperty(id);
-    for (const storagePath of storagePaths) {
-      await removeStoredObject(storagePath);
+    // Duplicated listings share stored objects — only delete files that no
+    // surviving media row still references.
+    if (storagePaths.length) {
+      const stillReferenced = await repository.findReferencedStoragePaths(storagePaths);
+      for (const storagePath of storagePaths) {
+        if (!stillReferenced.has(storagePath)) await removeStoredObject(storagePath);
+      }
     }
     revalidatePath("/");
     revalidatePath("/properties");
@@ -62,6 +72,6 @@ export async function DELETE(request: Request, context: { params: Promise<{ id: 
     return jsonOk({ deleted: true });
   } catch (error) {
     console.error("[admin/properties] delete failed:", error);
-    return jsonError(error instanceof Error ? error.message : "The property could not be deleted.", 500);
+    return jsonError("The property could not be deleted right now. Please try again.", 500);
   }
 }

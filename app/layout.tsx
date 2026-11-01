@@ -37,7 +37,9 @@ export async function generateMetadata(): Promise<Metadata> {
       "Assam real estate",
     ],
     authors: [{ name: settings.branding.businessName }],
-    alternates: { canonical: "/" },
+    // Each public route declares its own canonical; adding one here would
+    // give the private Studio a canonical pointing at the homepage.
+    alternates: undefined,
     openGraph: {
       type: "website",
       locale: SITE.locale,

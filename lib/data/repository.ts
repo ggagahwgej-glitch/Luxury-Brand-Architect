@@ -39,6 +39,12 @@ export interface Repository {
   duplicateProperty(id: string): Promise<Property>;
   slugExists(slug: string, excludeId?: string): Promise<boolean>;
   getStoragePathsForProperty(id: string): Promise<string[]>;
+  /**
+   * Subset of `paths` still pointed at by any media row. Duplicated listings
+   * share stored objects, so a file may only be deleted when nothing else
+   * references it.
+   */
+  findReferencedStoragePaths(paths: string[]): Promise<Set<string>>;
 
   /* Media --------------------------------------------------------------- */
   listAllMedia(): Promise<MediaLibraryItem[]>;

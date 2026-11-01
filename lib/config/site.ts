@@ -1,4 +1,5 @@
 import type { SiteSettings } from "@/lib/types";
+import { SITE_TIME_ZONE } from "@/lib/constants";
 import { publicSiteUrl } from "@/lib/env";
 
 /**
@@ -68,6 +69,8 @@ export const SITE = {
   url: publicSiteUrl,
   locale: "en_IN",
   language: "en",
+  /** Business timezone (shared with lib/format via SITE_TIME_ZONE). */
+  timeZone: SITE_TIME_ZONE,
   /** Curated destinations shown on the homepage (managed from settings in future revisions). */
   destinations: [
     { name: "Guwahati", region: "Assam", image: "/seed/estate-aerial.jpg", blurb: "Riverfront residences and green hillside estates." },

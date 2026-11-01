@@ -155,6 +155,8 @@ export interface PropertyQuery {
   pageSize?: number;
   /** Owner Studio only — includes unpublished drafts. */
   includeUnpublished?: boolean;
+  /** Owner Studio only — filter to published (true) or draft (false) records. */
+  published?: boolean;
 }
 
 export interface Paginated<T> {

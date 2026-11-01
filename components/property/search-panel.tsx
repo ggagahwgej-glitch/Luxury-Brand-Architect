@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Search, SlidersHorizontal } from "lucide-react";
 import { PROPERTY_TYPE_LABELS } from "@/lib/constants";
@@ -27,7 +27,7 @@ export function SearchPanel({
   const [type, setType] = useState("");
   const [bedrooms, setBedrooms] = useState("");
   const [budgetIndex, setBudgetIndex] = useState("0");
-  const [pending, setPending] = useState(false);
+  const [pending, startTransition] = useTransition();
 
   const budgets = purpose === "rent" ? RENT_BUDGET_OPTIONS : BUDGET_OPTIONS;
 
@@ -43,7 +43,6 @@ export function SearchPanel({
 
   function submit(event: React.FormEvent) {
     event.preventDefault();
-    setPending(true);
     const params = new URLSearchParams();
     if (purpose) params.set("purpose", purpose);
     if (location) params.set("location", location);
@@ -52,7 +51,11 @@ export function SearchPanel({
     const budget = budgets[Number(budgetIndex)] ?? budgets[0];
     if (budget.min !== null) params.set("minPrice", String(budget.min));
     if (budget.max !== null) params.set("maxPrice", String(budget.max));
-    router.push(`/properties${params.size ? `?${params.toString()}` : ""}`);
+    // The transition state resets itself when navigation completes, so the
+    // button can never be left permanently disabled after a slow search.
+    startTransition(() => {
+      router.push(`/properties${params.size ? `?${params.toString()}` : ""}`);
+    });
   }
 
   return (

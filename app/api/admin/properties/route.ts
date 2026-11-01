@@ -24,9 +24,14 @@ export async function POST(request: Request) {
     revalidatePath(`/properties/${property.slug}`);
     return jsonOk({ property });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "The property could not be saved.";
+    const message = error instanceof Error ? error.message : "";
     console.error("[admin/properties] create failed:", error);
     const duplicate = /duplicate key|unique/i.test(message);
-    return jsonError(duplicate ? "A property with that web address (slug) already exists." : message, 500);
+    return jsonError(
+      duplicate
+        ? "A property with that web address (slug) already exists."
+        : "The property could not be saved. Please review the form and try again.",
+      duplicate ? 409 : 500,
+    );
   }
 }

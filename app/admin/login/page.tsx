@@ -5,6 +5,7 @@ import { ArrowLeft, LockKeyhole } from "lucide-react";
 import { BrandMark } from "@/components/layout/brand-mark";
 import { OwnerLoginForm } from "@/components/admin/login-form";
 import { getSiteSettings } from "@/lib/data";
+import { safeAdminPath } from "@/lib/utils";
 
 export const metadata: Metadata = {
   title: "Owner Sign In",
@@ -17,7 +18,7 @@ export default async function AdminLoginPage({
   searchParams: Promise<{ next?: string }>;
 }) {
   const [{ next }, settings] = await Promise.all([searchParams, getSiteSettings()]);
-  const nextPath = next && next.startsWith("/admin") ? next : "/admin/dashboard";
+  const nextPath = safeAdminPath(next);
 
   return (
     <main id="main-content" className="relative grid min-h-dvh bg-imperial lg:grid-cols-[1.05fr_0.95fr]">

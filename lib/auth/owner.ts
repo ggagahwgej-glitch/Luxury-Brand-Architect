@@ -56,7 +56,16 @@ export async function authenticateOwner(input: {
   const provider = resolveDataProvider();
 
   if (provider === "local") {
-    const { email, password, code } = localOwnerCredentials;
+    const credentials = localOwnerCredentials();
+    if (!credentials) {
+      return {
+        ok: false,
+        reason: "config",
+        message:
+          "The preview provider has no owner credentials. Set LOCAL_OWNER_EMAIL, LOCAL_OWNER_PASSWORD and LOCAL_OWNER_CODE in .env.local.",
+      };
+    }
+    const { email, password, code } = credentials;
     const matches =
       constantTimeEquals(input.email.toLowerCase(), email.toLowerCase()) &&
       constantTimeEquals(input.password, password) &&

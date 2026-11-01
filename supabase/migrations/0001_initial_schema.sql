@@ -63,6 +63,10 @@ create table if not exists public.properties (
   is_published  boolean not null default false,
   latitude      numeric(9,6) check (latitude is null or latitude between -90 and 90),
   longitude     numeric(9,6) check (longitude is null or longitude between -180 and 180),
+  -- Single comparable area value used by min/max-area filters and area sorting,
+  -- matching what the public site displays (built-up, else plot, else carpet).
+  area_display  numeric(12,2) generated always as
+                  (coalesce(built_up_area, plot_area, carpet_area, 0)) stored,
   created_at    timestamptz not null default now(),
   updated_at    timestamptz not null default now()
 );
@@ -72,6 +76,7 @@ create index if not exists properties_purpose_idx on public.properties (purpose)
 create index if not exists properties_type_idx2 on public.properties (property_type) where is_published;
 create index if not exists properties_location_idx on public.properties (lower(location)) where is_published;
 create index if not exists properties_price_idx on public.properties (price) where is_published;
+create index if not exists properties_area_idx on public.properties (area_display) where is_published;
 create index if not exists properties_featured_idx on public.properties (is_featured) where is_published;
 create index if not exists properties_search_idx on public.properties
   using gin (to_tsvector('simple', coalesce(title,'') || ' ' || coalesce(location,'') || ' ' || coalesce(address,'') || ' ' || coalesce(description,'')));

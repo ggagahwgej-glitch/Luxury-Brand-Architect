@@ -16,8 +16,11 @@ function safeSecret() {
 
 function redirectToLogin(request: NextRequest) {
   const url = request.nextUrl.clone();
+  // Preserve the full requested Studio URL (path + filters) so the owner lands
+  // back on the exact view after signing in.
+  const target = `${request.nextUrl.pathname}${request.nextUrl.search}`;
   url.pathname = "/admin/login";
-  url.search = `?next=${encodeURIComponent(request.nextUrl.pathname)}`;
+  url.search = `?next=${encodeURIComponent(target)}`;
   return NextResponse.redirect(url);
 }
 
@@ -31,7 +34,9 @@ export async function middleware(request: NextRequest) {
   const isLoginRoute = pathname === "/admin/login";
 
   if (isApi) {
-    if (pathname === "/api/admin/login") return NextResponse.next();
+    // Sign-in and sign-out must work without a (valid) session: the logout
+    // route's whole job is clearing a cookie that may already be expired.
+    if (pathname === "/api/admin/login" || pathname === "/api/admin/logout") return NextResponse.next();
     if (!session) {
       return NextResponse.json(
         { ok: false, error: "Not authorised. Please sign in to the Owner Studio." },

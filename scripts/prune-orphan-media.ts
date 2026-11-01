@@ -10,6 +10,21 @@ import path from "node:path";
 import "./load-env";
 import { createClient } from "@supabase/supabase-js";
 
+/** Every URL-ish field in site_settings that can point at a stored asset. */
+function brandAssetValues(settings: Record<string, unknown> | undefined): string[] {
+  if (!settings) return [];
+  const values: string[] = [];
+  for (const section of ["branding", "website", "seo"]) {
+    const group = settings[section];
+    if (!group || typeof group !== "object") continue;
+    for (const value of Object.values(group as Record<string, unknown>)) {
+      if (typeof value === "string" && value.startsWith("http")) values.push(value);
+      if (typeof value === "string" && value.startsWith("/api/media/")) values.push(value);
+    }
+  }
+  return values;
+}
+
 async function main() {
   const apply = process.argv.includes("--apply");
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -22,10 +37,19 @@ async function main() {
     const dbFile = path.join(process.env.LOCAL_DATA_DIR ?? path.join(process.cwd(), ".data"), "db.json");
     const db = JSON.parse(await fs.readFile(dbFile, "utf8")) as {
       properties: { media: { storagePath: string | null }[] }[];
+      settings?: Record<string, unknown>;
     };
     const used = new Set(
       db.properties.flatMap((property) => property.media.map((media) => media.storagePath).filter(Boolean) as string[]),
     );
+    // Brand assets (logo, favicon, OG image, hero) live in site_settings, not in
+    // property_media — without this they would be reported as orphans and
+    // deleted by --apply.
+    for (const value of brandAssetValues(db.settings)) {
+      const marker = "/api/media/";
+      const index = value.indexOf(marker);
+      if (index !== -1) used.add(value.slice(index + marker.length).split(/[?#]/)[0] ?? "");
+    }
     const files = await fs.readdir(dir).catch(() => []);
     const orphans = files.filter((file) => !used.has(file));
     console.log(`Local preview uploads: ${files.length} file(s), ${used.size} referenced, ${orphans.length} orphan(s).`);
@@ -50,6 +74,17 @@ async function main() {
     (mediaRows ?? []).map((row) => (row as { storage_path: string | null }).storage_path).filter(Boolean) as string[],
   );
 
+  // Brand assets are referenced from site_settings URLs rather than
+  // property_media, so they must be counted before anything is deleted.
+  const { data: settingsRows } = await admin.from("site_settings").select("*").eq("id", 1);
+  const marker = `/storage/v1/object/public/${bucket}/`;
+  for (const row of settingsRows ?? []) {
+    for (const value of brandAssetValues(row as Record<string, unknown>)) {
+      const index = value.indexOf(marker);
+      if (index !== -1) referenced.add(decodeURIComponent(value.slice(index + marker.length).split(/[?#]/)[0] ?? ""));
+    }
+  }
+
   const files: string[] = [];
   let page = 0;
   const limit = 100;
@@ -70,7 +105,8 @@ async function main() {
     page += 1;
   }
 
-  const orphans = files.filter((file) => !referenced.has(file));
+  // Anything under brand/ is a curated brand asset — never prune that folder.
+  const orphans = files.filter((file) => !file.startsWith("brand/") && !referenced.has(file));
   console.log(`Bucket "${bucket}": ${files.length} object(s), ${referenced.size} referenced, ${orphans.length} orphan(s).`);
   for (const orphan of orphans) {
     console.log(` - ${orphan}`);

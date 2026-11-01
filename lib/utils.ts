@@ -13,7 +13,10 @@ export function slugify(value: string) {
     .replace(/&/g, " and ")
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
-    .slice(0, 72);
+    .slice(0, 72)
+    // The slice can land mid-word and leave a trailing hyphen, which the slug
+    // validation regex (and the database constraint) would reject.
+    .replace(/-+$/g, "");
 }
 
 /** Deterministic RFC-4122 v4-shaped UUID from the platform crypto module. */
@@ -24,6 +27,16 @@ export function uuid() {
     const v = c === "x" ? r : (r & 0x3) | 0x8;
     return v.toString(16);
   });
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Postgres rejects malformed UUIDs with a hard error, so identifiers coming
+ * from a URL are checked before they reach a query.
+ */
+export function isUuid(value: string | null | undefined): value is string {
+  return typeof value === "string" && UUID_RE.test(value);
 }
 
 export function truncate(value: string, max: number) {
@@ -57,6 +70,18 @@ export function uniqueStrings(values: string[]) {
     out.push(value);
   }
   return out;
+}
+
+/**
+ * Restricts a post-login redirect to the Studio itself.
+ * Blocks protocol-relative (`//evil.example`) and non-admin destinations.
+ */
+export function safeAdminPath(value: string | null | undefined) {
+  const fallback = "/admin/dashboard";
+  if (!value || !value.startsWith("/")) return fallback;
+  if (value.startsWith("//") || value.startsWith("/\\")) return fallback;
+  if (value !== "/admin" && !value.startsWith("/admin/") && !value.startsWith("/admin?")) return fallback;
+  return value;
 }
 
 /** Escapes user content before it is embedded in JSON-LD. */

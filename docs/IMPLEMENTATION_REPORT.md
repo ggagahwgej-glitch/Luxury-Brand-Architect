@@ -20,7 +20,7 @@ Single Next.js 15 application containing the public luxury real-estate website *
 | Auth | Supabase Auth (email + password) → owner authorization → bcrypt-hashed 12-digit secret code → signed session cookie |
 | Fonts | `@fontsource` (self-hosted): Cormorant Garamond + Playfair Display (display), Inter Variable (body) |
 | Icons | lucide-react + hand-built brand social icons |
-| Tests | Vitest (24 assertions across 4 suites) |
+| Tests | Vitest (37 assertions across 5 suites) |
 | CLI | `tsx` scripts for owner-code hashing, storage pruning, backend verification |
 
 ### Directory map
@@ -59,7 +59,7 @@ Copy `.env.example` → `.env.local` (never committed).
 | `SUPABASE_SERVICE_ROLE_KEY` | server only | Used by server routes; validated to be server-side and never returned to the client |
 | `SUPABASE_STORAGE_BUCKET` | server | Defaults to `property-media` |
 | `ADMIN_SESSION_SECRET` | server only | HMAC signing key for the admin session cookie (32+ random bytes) |
-| `LOCAL_OWNER_EMAIL` / `_PASSWORD` / `_CODE` | dev only | Credentials for the local provider preview; ignored when `DATA_PROVIDER=supabase` |
+| `LOCAL_OWNER_EMAIL` / `_PASSWORD` / `_CODE` | dev only | Credentials for the local provider preview; ignored when `DATA_PROVIDER=supabase`. **No defaults are compiled in** — the preview cannot sign in until all three are set |
 | `ALLOW_LOCAL_PROVIDER` | dev/CI only | Permits the local provider inside a production build (used only for this sandbox preview) |
 
 `lib/env.ts` validates presence and shape at startup and throws a readable error rather than failing at request time.
@@ -84,9 +84,16 @@ supabase/migrations/0003_storage.sql
 supabase/seed.sql          # brand/contact/hero/SEO defaults only
 ```
 
-- **0001** creates `profiles`, `properties`, `property_media`, `inquiries`, `site_settings`, `owner_security`, `login_attempts`; UUID primary keys (`gen_random_uuid()`), check constraints on enums/prices/area, `set_updated_at()` triggers, `is_owner()` SECURITY DEFINER helper, and indexes for published/status, purpose, type, lower(location), price, featured plus a GIN `tsvector` search index and inquiry status/property/date indexes.
+- **0001** creates `profiles`, `properties`, `property_media`, `inquiries`, `site_settings`, `owner_security`, `login_attempts`; UUID primary keys (`gen_random_uuid()`), check constraints on enums/prices/area, `set_updated_at()` triggers, `is_owner()` SECURITY DEFINER helper, and indexes for published/status, purpose, type, lower(location), price, featured, `area_display` plus a GIN `tsvector` search index and inquiry status/property/date indexes. `properties.area_display` is a stored generated column (`coalesce(built_up_area, plot_area, carpet_area, 0)`) so min/max-area filters and area sorting compare one value on every provider.
 - **0002** enables RLS on all seven tables and adds policies: anon may read only published properties, their media and site settings; the owner (via `is_owner()`) has full access to content and inquiries; `inquiries`, `owner_security` and `login_attempts` are never readable by anon — anonymous inserts into `inquiries` are allowed through the server route only, and grants are scoped per table.
 - **0003** creates the public `property-media` bucket (64 MB limit, image/video MIME allowlist) with public read and owner-only insert/update/delete policies.
+
+> If an earlier copy of `0001` was already applied, add the generated column before deploying this build:
+> ```sql
+> alter table public.properties add column area_display numeric(12,2)
+>   generated always as (coalesce(built_up_area, plot_area, carpet_area, 0)) stored;
+> create index properties_area_idx on public.properties (area_display) where is_published;
+> ```
 
 ### 3.3 Authorize the owner
 
@@ -227,14 +234,14 @@ Changing the hero heading, the accent preset (`imperial_gold` → `champagne`) a
 ### Automated
 
 ```
-npx vitest run        → 24 passing (4 files)
+npx vitest run        → 37 passing (5 files)
 npx tsc --noEmit      → clean (excluding generated .next/types)
 npm run build         → compiled successfully, 19 routes
 npm run seed:check    → passes in local mode
 npm run owner:hash    → prints bcrypt hash + SQL
 ```
 
-Coverage: validation schemas (11), local repository CRUD/filtering/pagination (7), session token signing/tampering/expiry (4), rate-limit windows and lockout (2).
+Coverage: validation schemas (16), local repository CRUD/filtering/pagination (10), provider/env guards (5), session token signing/tampering/expiry (4), rate-limit windows and lockout (2).
 
 ### Production build, HTTP-tested with curl
 
@@ -279,7 +286,41 @@ Coverage: validation schemas (11), local repository CRUD/filtering/pagination (7
 
 ---
 
-## 11. Known limitations & recommended next steps
+## 11. Bug-fix pass (post-review)
+
+A review pass over the whole app — production build smoke tests, edge-case URLs, and a read-through of every production-only (Supabase) code path — found and fixed the following. Each item was reproduced first, and the ones testable without Supabase were re-verified after the fix.
+
+| # | Area | Bug found | Fix |
+| --- | --- | --- | --- |
+| 1 | Detail page | A Suspense boundary (`properties/loading.tsx`) wrapped `[slug]`, so missing or unpublished listings rendered a 404 screen with **HTTP 200** | Listing page + skeleton moved into a `(index)` route group; both cases now return a real `404` |
+| 2 | Listing pages | `?page=99` showed "The register is being prepared" on a register full of listings | Repository clamps the page to the last real page (both providers); `/buy` and `/rent` redirect to a valid page |
+| 3 | Filters | A `maxArea`-only URL was applied but not counted, so the empty state claimed nothing is listed | `activeFilterCount` counts max area |
+| 4 | Listings (Supabase) | `.or("purpose.eq.…,location.eq.…")` broke on any location containing a comma — e.g. "Guwahati, Assam" — which would 500 every related-properties block | Two indexed queries merged in code |
+| 5 | Media (Supabase) | Moving the cover image updated rows one by one and collided with the `property_media_single_cover_idx` unique index | Existing covers are cleared before the new cover is applied |
+| 6 | Media/storage | Duplicated listings share a stored object; deleting the copy's media (or the copy itself) deleted the file used by the original | New `findReferencedStoragePaths()` check before any object is removed |
+| 7 | Media pruning | `storage:prune --apply` ignored brand assets referenced from `site_settings` and would delete the uploaded logo | Prune counts settings assets and never touches `brand/` |
+| 8 | Studio properties | The published/draft visibility filter ran *after* pagination, so "1 record" could hide drafts on page 2 | `published` filter pushed into the query for both providers |
+| 9 | Studio URLs | Non-UUID ids (`/admin/properties/abc/edit`, `?focus=abc`) raised a Postgres uuid error → 500 instead of a clean 404 | `isUuid()` guards in the Supabase lookups |
+| 10 | Studio tables | Pagination links built `?&visibility=draft` | Query string rebuilt with `URLSearchParams` |
+| 11 | Gallery | Navigating between listings kept the old image index; with the lightbox open on a shorter gallery this hit `images[active]!` and crashed | Index clamped to the current gallery; no non-null assertion remains |
+| 12 | Settings | One half-filled testimonial card blocked every other settings tab from saving | Incomplete cards are skipped and reported; the form jumps to the tab owning the first invalid field |
+| 13 | Dates | Studio timestamps formatted in the server's zone and the browser's zone → hydration mismatch and inconsistent times | All dates use one business timezone (`Asia/Kolkata`) via `SITE_TIME_ZONE` |
+| 14 | SEO | `/about`'s Open Graph image pointed at a missing file (`/seed/brand-story.jpg`) | Points at an existing asset |
+| 15 | SEO | Root layout forced `canonical: "/"` onto Studio pages | Root canonical removed; every public route declares its own |
+| 16 | Security | A production build with **no** provider configured silently fell back to the local JSON store | `resolveDataProvider()` now fails fast with a clear message |
+| 17 | Security | The preview owner's email/password/code were compiled in as defaults | Removed; `.env.local` must supply all three |
+| 18 | Security | `?next=` accepted any `/admin`-prefixed string | `safeAdminPath()` allows only Studio paths and blocks protocol-relative URLs |
+| 19 | Security | Error responses echoed raw database messages (constraint names, SQL text) | Routes return generic messages and log the detail |
+| 20 | Security | Cross-site requests without an `Origin` header were accepted; JSON bodies were unbounded | `Sec-Fetch-Site: cross-site` is rejected and JSON bodies are capped at 1 MB |
+| 21 | Security | Sign-out required a *valid* session, so an expired session could not clear its cookie | Logout route bypasses the session gate |
+| 22 | Data | A public enquiry could be linked to an unpublished listing when its id was known | Both providers require the listing to be published |
+| 23 | Data | A slug truncated at 72 characters could end with a hyphen, failing the slug constraint | `slugify()` trims trailing hyphens |
+| 24 | Facets | Location counts included sold listings on one provider and not the other | Both count browsable (`available`/`under_offer`) listings only |
+| 25 | Errors | A duplicate slug surfaced as `500` | Returns `409` with an actionable message |
+
+Verification after the fixes: `tsc` clean, `vitest run` 37 passing, production build succeeds, all public routes 200, missing/unpublished slugs 404, Studio 307→login, admin CRUD/publish/duplicate/delete round-trip, settings reflected on the public site, storage-reference case reproduced then fixed (copy deleted → original image still served; both deleted → file gone), inquiry create→status→delete round-trip, media/traversal/upload-rejection checks.
+
+## 12. Known limitations & recommended next steps
 
 1. **Run the Supabase verification pass** — apply 0001→0003, seed, bootstrap the owner, `npm run seed:check`, then repeat the curl matrix in §10 against `DATA_PROVIDER=supabase`. This is the only meaningful gap between "verified" and "production-proven".
 2. **Email notifications for inquiries** — add a provider (Resend/Postmark) behind a server action; the data model already carries everything needed.
@@ -287,10 +328,12 @@ Coverage: validation schemas (11), local repository CRUD/filtering/pagination (7
 4. **Backups** — enable Supabase daily backups (or PITR) and export `property-media` periodically; nothing in the app depends on `login_attempts` history.
 5. **`login_attempts` retention** — a scheduled delete of rows older than 30 days keeps the audit table small.
 6. **Demo content** — the local provider ships nine `isDemo` listings and two seed images per property so the design can be reviewed. Supabase starts empty by design and shows tasteful empty states; nothing in the production provider pretends to be a real listing.
+7. **Brand assets have no delete button** — replacing or clearing a logo/favicon in settings detaches the file, and the orphan sweep then removes it. A dedicated brand-asset list in the media library would be a nice addition.
+8. **In-process rate limiting** — the limiter is per server instance. A multi-instance serverless deployment should front `/api/admin/login` and `/api/inquiries` with a shared limiter (e.g. Upstash Redis).
 
 ---
 
-## 12. Deployment checklist
+## 13. Deployment checklist
 
 1. `DATA_PROVIDER=supabase`, `NEXT_PUBLIC_SITE_URL=https://client-domain.com`, Supabase URL/anon/service-role keys, `ADMIN_SESSION_SECRET` (`openssl rand -base64 48`), `SUPABASE_STORAGE_BUCKET=property-media`. Do **not** set `ALLOW_LOCAL_PROVIDER` in production.
 2. Apply migrations 0001→0003 + `seed.sql`; create the owner Auth user; insert the `profiles` row as owner/authorized; run `npm run owner:hash` and apply the printed SQL.

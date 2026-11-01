@@ -139,7 +139,7 @@ export function activeFilterCount(filters: ListingFilters) {
   if (filters.minPrice !== null || filters.maxPrice !== null) count += 1;
   if (filters.bedrooms !== null) count += 1;
   if (filters.bathrooms !== null) count += 1;
-  if (filters.minArea !== null) count += 1;
+  if (filters.minArea !== null || filters.maxArea !== null) count += 1;
   if (filters.status) count += 1;
   return count;
 }
