@@ -1,0 +1,73 @@
+import type { Metadata } from "next";
+import { getRepository, getSiteSettings } from "@/lib/data";
+import { HomeHero } from "@/components/home/hero";
+import {
+  BrandIntroduction,
+  ClosingCta,
+  CollectionsSection,
+  DestinationsSection,
+  ExperienceSection,
+  SignatureProperties,
+  TestimonialsSection,
+  WhyUsSection,
+} from "@/components/home/sections";
+import { jsonLdSafe } from "@/lib/utils";
+import { SITE } from "@/lib/config/site";
+
+export async function generateMetadata(): Promise<Metadata> {
+  const settings = await getSiteSettings();
+  return {
+    title: settings.seo.title,
+    description: settings.seo.description,
+    alternates: { canonical: "/" },
+    openGraph: {
+      title: settings.seo.title,
+      description: settings.seo.description,
+      url: SITE.url,
+      images: [{ url: settings.website.heroImageUrl ?? "/seed/hero-residence.jpg" }],
+    },
+  };
+}
+
+export default async function HomePage() {
+  const settings = await getSiteSettings();
+  const repository = getRepository();
+
+  const [featured, newest, locations, typeFacets] = await Promise.all([
+    repository.listFeatured(3),
+    repository.listProperties({ pageSize: 3, sort: "newest", availabilityOnly: true }),
+    repository.listLocationFacets(),
+    repository.listTypeFacets(),
+  ]);
+
+  const signature = featured.length >= 3 ? featured.slice(0, 3) : newest.items.slice(0, 3);
+  const heroImage = settings.website.heroImageUrl ?? "/seed/hero-residence.jpg";
+
+  const websiteLd = {
+    "@context": "https://schema.org",
+    "@type": "WebSite",
+    name: settings.branding.websiteName,
+    url: SITE.url,
+    potentialAction: {
+      "@type": "SearchAction",
+      target: `${SITE.url}/properties?q={search_term_string}`,
+      "query-input": "required name=search_term_string",
+    },
+  };
+
+  return (
+    <>
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: jsonLdSafe(websiteLd) }} />
+      <HomeHero settings={settings} locations={locations} heroImage={heroImage} />
+
+      <BrandIntroduction settings={settings} />
+      <SignatureProperties properties={signature} />
+      {settings.website.showCollections ? <CollectionsSection facets={typeFacets} /> : null}
+      {settings.website.showDestinations ? <DestinationsSection locations={locations} /> : null}
+      {settings.website.showWhyUs ? <WhyUsSection /> : null}
+      {settings.website.showExperience ? <ExperienceSection /> : null}
+      {settings.website.showTestimonials ? <TestimonialsSection testimonials={settings.testimonials} /> : null}
+      <ClosingCta settings={settings} />
+    </>
+  );
+}
