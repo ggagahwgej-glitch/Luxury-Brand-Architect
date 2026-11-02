@@ -29,7 +29,7 @@ LOCAL_OWNER_CODE=741852963147
 The local provider writes to `.data/db.json` (git-ignored). Inside a production build it is refused unless `ALLOW_LOCAL_PROVIDER=1` is set, and a production build with *no* provider configured now fails fast with a clear message instead of quietly serving demo data.
 
 - Public site: `/`
-- Studio: `/admin/login` (email + password + 12-digit code)
+- Studio: `/admin/login` (owner email + password; the optional 12-digit code is controlled by `OWNER_ACCESS_CODE`)
 - The admin link is deliberately absent from the main navigation — it lives on `/settings` and in the footer.
 
 ## Production setup (one Supabase project per client)
@@ -65,14 +65,27 @@ bucket) and `seed.sql` (brand defaults, no demo listings). It is idempotent.
 `npm run sql:bundle` and `npm run verify:sql` (applies the migrations to an
 in-process Postgres and asserts the constraints, triggers and RLS rules).
 
-### 3. Owner account, authorisation and the 12-digit code
+### 3. Owner account and authorisation
 
 Fast path — creates the Auth user with the email confirmed, authorises the
-profile and stores the code hash, then verifies it:
+profile and (unless the second factor is switched off) stores the code hash,
+then verifies it:
 
 ```bash
 npm run owner:create -- owner@client.com "a-strong-password" 741852963147
 ```
+
+**Second factor:** with `OWNER_ACCESS_CODE=enabled` (default) the Studio asks for
+email + password + the permanent 12-digit code. With
+`OWNER_ACCESS_CODE=disabled` it asks only for the owner email and password —
+useful when the owner prefers a single strong password. Then omit the code:
+
+```bash
+npm run owner:create -- owner@client.com "a-strong-password"
+```
+
+Either way the account must be `role='owner'` **and** `is_authorized=true` in
+`profiles`; the flag only controls the third check, never the authorisation.
 
 Dashboard path instead: keep Email auth on, turn **off** “Allow new users to
 sign up”, add the owner user with *Auto Confirm User*, then run
@@ -84,6 +97,14 @@ SQL into the SQL editor.
 Storage → `property-media` → Settings → CORS: allow the site origin(s) for
 `GET`, `PUT`, `POST` with headers `Content-Type`, `cache-control`, `x-upsert`.
 Without it, files above 4 MB cannot upload directly and videos are refused.
+
+### 5b. Sign-in security
+
+When the second factor is disabled, the Studio password becomes the single
+guard, so: use a long unique password stored in a password manager, keep
+Supabase's “Password strength and leaked password protection” enabled, and keep
+"Allow new users to sign up" off. The login endpoint is rate limited (5 attempts
+per 15 minutes per IP) and every attempt is audited in `login_attempts`.
 
 ### 6. Verify, then deploy
 

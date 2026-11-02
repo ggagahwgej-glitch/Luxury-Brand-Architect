@@ -6,6 +6,7 @@ import { BrandMark } from "@/components/layout/brand-mark";
 import { OwnerLoginForm } from "@/components/admin/login-form";
 import { getSiteSettings } from "@/lib/data";
 import { safeAdminPath } from "@/lib/utils";
+import { ownerAccessCodeRequired } from "@/lib/env";
 
 export const metadata: Metadata = {
   title: "Owner Sign In",
@@ -45,7 +46,7 @@ export default async function AdminLoginPage({
             </p>
             <div className="mt-8 grid grid-cols-2 gap-4 border-t border-white/10 pt-6 text-[0.62rem] uppercase tracking-[0.18em] text-silver/45">
               <span>Server-verified access</span>
-              <span>Encrypted 12-digit code</span>
+              <span>{ownerAccessCodeRequired ? "Encrypted 12-digit code" : "Owner-only authorisation"}</span>
               <span>Session expiry · 8 hours</span>
               <span>Attempt logging</span>
             </div>
@@ -74,12 +75,13 @@ export default async function AdminLoginPage({
             </div>
           </div>
 
-          <OwnerLoginForm nextPath={nextPath} />
+          <OwnerLoginForm nextPath={nextPath} codeRequired={ownerAccessCodeRequired} />
 
           <div className="mt-8 flex flex-col gap-3 border-t border-white/[0.07] pt-6 text-[0.7rem] text-silver/50">
             <p>
-              Lost your access code? The 12-digit code can only be reset by a developer with database access — it is
-              stored as a bcrypt hash and cannot be recovered.
+              {ownerAccessCodeRequired
+                ? "Lost your access code? It is stored only as a bcrypt hash, so it cannot be recovered — a developer with database access can reset it with `npm run owner:create`."
+                : "Forgotten your password? Reset it in Supabase → Authentication → Users, or re-run `npm run owner:create`."}
             </p>
             <Link href="/" className="inline-flex items-center gap-1.5 text-silver/70 transition-colors hover:text-gold">
               <ArrowLeft aria-hidden="true" className="h-3.5 w-3.5" />

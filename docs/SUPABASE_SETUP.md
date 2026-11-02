@@ -96,14 +96,22 @@ hash of the code in `owner_security` (the code itself is never stored).
 
 ## 4. How the Studio sign-in works
 
-`/admin/login` asks for three factors, all checked server-side:
+`/admin/login` checks these server-side:
 
-1. email + password (Supabase Auth)
+1. owner email + password (Supabase Auth)
 2. the `profiles` row is `role = 'owner'` **and** `is_authorized = true`
-3. the 12-digit code, compared against the bcrypt hash in `owner_security`
+3. *(only when `OWNER_ACCESS_CODE=enabled`)* the permanent 12-digit code,
+   compared against the bcrypt hash in `owner_security` — five wrong codes lock
+   the factor for 15 minutes
 
-Five wrong codes lock the Studio for 15 minutes. The code is permanent; the
-session is an HttpOnly cookie that expires after 8 hours.
+This deployment sets `OWNER_ACCESS_CODE=disabled`, so the Studio asks for
+**email + password only**. Add `OWNER_ACCESS_CODE=enabled` to `.env.local` and
+the Vercel environment (then redeploy) to bring the code back — the SQL and the
+`owner_security` rows do not need to change.
+
+The session is an HttpOnly, SameSite=Lax cookie that expires after 8 hours; the
+login endpoint is rate limited (5 attempts / 15 minutes per IP) and every attempt
+is written to `login_attempts`.
 
 ## 5. Storage CORS (needed for large uploads)
 
@@ -148,7 +156,8 @@ preview mode). Pass `-- --local` to check the preview configuration itself.
 ## 7. First run
 
 1. Deploy (or `npm run build && npm run start`).
-2. Open `/admin/login`, sign in with the three factors.
+2. Open `/admin/login`, sign in with the owner email + password (no code when
+   `OWNER_ACCESS_CODE=disabled`).
 3. Studio → Properties → New: add the first listing, upload photographs, publish.
 4. Public site → the listing appears on `/`, `/properties`, `/buy` or `/rent`.
 5. Studio → Settings: set the real business name, phone, WhatsApp, email, address,
@@ -164,7 +173,8 @@ preview mode). Pass `-- --local` to check the preview configuration itself.
 | --- | --- | --- |
 | Sign-in: "The Owner Studio is not configured…" | `SUPABASE_SERVICE_ROLE_KEY` or `ADMIN_SESSION_SECRET` missing | step 1, then redeploy |
 | Sign-in: "This account is not authorised" | `profiles` row missing / not authorised | step 4 |
-| Sign-in: "The 12-digit access code has not been configured" | no `owner_security` row | step 4 |
+| Sign-in: "The 12-digit access code has not been configured" | `OWNER_ACCESS_CODE` is enabled but no `owner_security` row exists | step 3 with a code, or set `OWNER_ACCESS_CODE=disabled` |
+| The code field appears although it was disabled | `OWNER_ACCESS_CODE` missing on the deployment | add it and redeploy (it is read at runtime) |
 | Sign-in: "Email not confirmed" | user created without Auto Confirm | confirm the user in Authentication → Users |
 | Public pages show "register is being prepared" | no published listings yet | expected on a fresh project |
 | Enquiry form: "could not be saved right now" | service key wrong or schema missing | `npm run seed:check` |

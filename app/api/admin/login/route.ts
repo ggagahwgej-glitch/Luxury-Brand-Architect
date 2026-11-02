@@ -3,7 +3,7 @@ import { loginSchema } from "@/lib/validation/auth";
 import { authenticateOwner } from "@/lib/auth/owner";
 import { createSessionToken } from "@/lib/auth/token";
 import { sessionCookieOptions, ADMIN_COOKIE } from "@/lib/auth/session";
-import { assertAdminSecret, resolveDataProvider } from "@/lib/env";
+import { assertAdminSecret, ownerAccessCodeRequired, resolveDataProvider } from "@/lib/env";
 import { checkRateLimit, hashIdentifier, LOGIN_RATE_LIMIT, resetRateLimit } from "@/lib/auth/rate-limit";
 import { clientIp } from "@/lib/auth/admin";
 import { isSameOrigin, jsonError, readJson } from "@/lib/api";
@@ -53,12 +53,19 @@ export async function POST(request: Request) {
     );
   }
 
+  const code = parsed.data.code?.trim() ?? "";
+  if (ownerAccessCodeRequired && code.length !== 12) {
+    return jsonError("Please correct the highlighted fields.", 422, {
+      fieldErrors: { code: "Enter your 12-digit access code" },
+    });
+  }
+
   let result;
   try {
     result = await authenticateOwner({
       email: parsed.data.email,
       password: parsed.data.password,
-      code: parsed.data.code,
+      code,
       ipHash,
     });
   } catch (error) {

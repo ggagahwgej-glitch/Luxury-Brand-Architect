@@ -7,10 +7,11 @@ import { AlertCircle, ArrowRight, Eye, EyeOff, Loader2, Lock, Mail, ShieldCheck 
 import { cn } from "@/lib/utils";
 
 /**
- * Owner sign-in: three factors (email, password, 12-digit code).
- * Verification happens entirely server-side at /api/admin/login.
+ * Owner sign-in. Verification happens entirely server-side at
+ * /api/admin/login: owner email + password, and — unless the deployment has
+ * turned it off with OWNER_ACCESS_CODE=disabled — the permanent 12-digit code.
  */
-export function OwnerLoginForm({ nextPath }: { nextPath: string }) {
+export function OwnerLoginForm({ nextPath, codeRequired = true }: { nextPath: string; codeRequired?: boolean }) {
   const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -30,7 +31,11 @@ export function OwnerLoginForm({ nextPath }: { nextPath: string }) {
       const response = await fetch("/api/admin/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: email.trim(), password, code: code.replace(/\D/g, "") }),
+        body: JSON.stringify({
+          email: email.trim(),
+          password,
+          ...(codeRequired ? { code: code.replace(/\D/g, "") } : {}),
+        }),
       });
       const payload = (await response.json().catch(() => null)) as
         | { ok?: boolean; error?: string; fieldErrors?: Record<string, string>; redirectTo?: string }
@@ -107,6 +112,7 @@ export function OwnerLoginForm({ nextPath }: { nextPath: string }) {
         {fieldErrors.password ? <p className="field-error-text">{fieldErrors.password}</p> : null}
       </div>
 
+      {codeRequired ? (
       <div>
         <label htmlFor="admin-code" className="field-label">
           Permanent 12-digit access code
@@ -135,6 +141,12 @@ export function OwnerLoginForm({ nextPath }: { nextPath: string }) {
         </p>
         {fieldErrors.code ? <p className="field-error-text">{fieldErrors.code}</p> : null}
       </div>
+      ) : (
+        <p className="field-hint flex items-center gap-1.5">
+          <ShieldCheck aria-hidden="true" className="h-3 w-3 text-gold/60" />
+          Signed in with your owner email and password. Access is verified on the server.
+        </p>
+      )}
 
       {error ? (
         <div role="alert" className="flex items-start gap-2 border border-danger/30 bg-danger/[0.07] px-3.5 py-3 text-[0.78rem] text-[#e6a3a3]">

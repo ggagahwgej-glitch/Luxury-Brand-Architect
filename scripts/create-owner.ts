@@ -3,6 +3,9 @@
  *
  *   npm run owner:create -- owner@client.com "strong-password" 741852963147
  *
+ * The 12-digit code may be omitted when OWNER_ACCESS_CODE=disabled; it is then
+ * not stored and the Studio asks only for email + password.
+ *
  * Requires the schema to exist ("npm run sql:bundle" pasted into the SQL editor)
  * and the service/secret key in .env.local. It is idempotent: running it again
  * rotates the password and the access code for the same email instead of
@@ -31,8 +34,16 @@ async function main() {
   if (!password || password.length < 10) {
     fail("Provide a password of at least 10 characters.");
   }
-  if (!code || !/^\d{12}$/.test(code)) {
-    fail("The access code must be exactly 12 digits.");
+  const codeRequired = !["disabled", "off", "false", "0"].includes(
+    (process.env.OWNER_ACCESS_CODE ?? "enabled").toLowerCase(),
+  );
+  if (code && !/^\d{12}$/.test(code)) {
+    fail("The access code must be exactly 12 digits (or omit it when OWNER_ACCESS_CODE=disabled).");
+  }
+  if (!code && codeRequired) {
+    fail(
+      "This deployment expects a 12-digit access code. Pass one, e.g.\n  npm run owner:create -- owner@client.com \"strong-password\" 741852963147",
+    );
   }
 
   const url = (process.env.NEXT_PUBLIC_SUPABASE_URL ?? "").trim().replace(/\/+$/, "");
@@ -80,6 +91,12 @@ async function main() {
   console.log("✓ profiles row authorised as owner");
 
   // ── 12-digit code ────────────────────────────────────────────────────────
+  if (!code) {
+    console.log("• OWNER_ACCESS_CODE=disabled — no 12-digit code stored (email + password only)");
+    console.log(`\nDone. Sign in at /admin/login with the email ${email} and the password you just set.\n`);
+    return;
+  }
+
   const hash = await bcrypt.hash(code, 12);
   const { error: securityError } = await admin.from("owner_security").upsert(
     {

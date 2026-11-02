@@ -5,6 +5,7 @@ import { createClient } from "@supabase/supabase-js";
 import {
   isSupabaseConfigured,
   localOwnerCredentials,
+  ownerAccessCodeRequired,
   resolveDataProvider,
   supabaseAnonKey,
   supabaseUrl,
@@ -69,7 +70,7 @@ export async function authenticateOwner(input: {
     const matches =
       constantTimeEquals(input.email.toLowerCase(), email.toLowerCase()) &&
       constantTimeEquals(input.password, password) &&
-      constantTimeEquals(input.code, code);
+      (!ownerAccessCodeRequired || constantTimeEquals(input.code, code));
     if (!matches) return genericFailure;
     return {
       ok: true,
@@ -136,6 +137,20 @@ export async function authenticateOwner(input: {
       ok: false,
       reason: "disabled",
       message: "This account is not authorised for the Owner Studio.",
+    };
+  }
+
+  // Second factor switched off by the owner: email + password + the authorised
+  // profile are enough. The `owner_security` row is never read in this mode.
+  if (!ownerAccessCodeRequired) {
+    await recordAttempt(input.email, input.ipHash, true);
+    return {
+      ok: true,
+      owner: {
+        id: ownerProfile.id,
+        email: ownerProfile.email ?? input.email,
+        name: ownerProfile.full_name?.trim() || ownerProfile.email || "Owner",
+      },
     };
   }
 

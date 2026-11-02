@@ -17,7 +17,7 @@ Single Next.js 15 application containing the public luxury real-estate website *
 | Styling | Tailwind CSS 3.4 with a custom token layer in `app/globals.css` |
 | Data | `@supabase/supabase-js` (production) / file-backed local provider (development preview only) |
 | Validation | Zod 4 on every public and admin write path |
-| Auth | Supabase Auth (email + password) → owner authorization → bcrypt-hashed 12-digit secret code → signed session cookie |
+| Auth | Supabase Auth (email + password) → owner authorization → optional bcrypt-hashed 12-digit code (`OWNER_ACCESS_CODE`) → signed session cookie |
 | Fonts | `@fontsource` (self-hosted): Cormorant Garamond + Playfair Display (display), Inter Variable (body) |
 | Icons | lucide-react + hand-built brand social icons |
 | Tests | Vitest (47 assertions across 6 suites) + 36 SQL/RLS checks |
@@ -132,7 +132,7 @@ Asserts env shape, that all six content tables + `login_attempts` exist, that th
 
 ---
 
-## 4. Owner authentication (three factors, server-side)
+## 4. Owner authentication (server-side; two or three factors)
 
 `POST /api/admin/login` performs, in order:
 
@@ -140,7 +140,7 @@ Asserts env shape, that all six content tables + `login_attempts` exist, that th
 2. **Rate limit** — 5 attempts / 15 min per hashed IP, then `429` with `Retry-After` and `retryAfterSeconds`.
 3. **Factor 1** — email + password verified with Supabase Auth (`signInWithPassword`); the local provider compares against dev credentials.
 4. **Factor 2** — owner authorization: `profiles.role = 'owner'` **and** `is_authorized = true`.
-5. **Factor 3** — 12-digit code compared with bcrypt against `owner_security.secret_code_hash`; 5 wrong codes lock the factor for 15 minutes. A successful login clears both counters.
+5. **Factor 3 (optional)** — 12-digit code compared with bcrypt against `owner_security.secret_code_hash`; 5 wrong codes lock the factor for 15 minutes. A successful login clears both counters. This step is skipped entirely when the deployment sets `OWNER_ACCESS_CODE=disabled` (§18); the `owner_security` row is then never read.
 6. Issues the session cookie and writes a login attempt record (identifier + IP stored as HMAC hashes only).
 
 Cookie: `aurum_admin_session`, HMAC-SHA256 signed payload (sub, role, iat, exp), 8-hour TTL, `HttpOnly`, `SameSite=Lax`, `Path=/`, `Secure` whenever `NEXT_PUBLIC_SITE_URL` is HTTPS.
@@ -478,7 +478,7 @@ or any video would have failed in production.
 | Public smoke (`/`, `/properties`, `/properties/[slug]`, `/buy`, `/rent`, `/categories`, `/about`, `/contact`, `/settings`, `/admin/login`, `/robots.txt`, `/sitemap.xml`) | all 200 |
 | Unauthenticated `/admin/dashboard` | 307 → `/admin/login?next=…` |
 | Unknown property slug / unknown Studio property id | 404 (real status, no soft-404) |
-| Owner sign-in (3 factors) | 200 + HttpOnly cookie |
+| Owner sign-in (3 factors, and 2-factor mode separately) | 200 + HttpOnly cookie |
 | `POST /api/admin/media/upload-url` (local provider) | 200 `{strategy:"proxy", maxBytes:4194304}` |
 | Same endpoint, unsupported type | 400 with a human message |
 | Same endpoint, cross-site `Origin` + `Sec-Fetch-Site: cross-site` | 403 |
@@ -646,3 +646,50 @@ was wrong (which previously led owners to lock themselves out).
 direct-to-Storage uploads, Storage CORS, real Supabase Auth sign-in and
 `sb_secret_…` acceptance — all covered by `npm run seed:check`, which prints the
 fix for every ✗.
+
+## 18. Second factor made optional (owner request)
+
+The owner asked to sign in with **email + password only**, without the permanent
+12-digit code. Rather than deleting the factor, it is now controlled by one
+server-side flag:
+
+```env
+OWNER_ACCESS_CODE=disabled   # email + password only
+OWNER_ACCESS_CODE=enabled    # default: email + password + the 12-digit code
+```
+
+What changes when it is disabled:
+
+- The login screen renders without the code field and posts without a `code`.
+- `POST /api/admin/login` does not require, validate or compare a code.
+- `authenticateOwner()` returns after the owner-authorisation check and never
+  reads `owner_security` (no lookup, no bcrypt compare, no lockout counters).
+- `npm run owner:create` accepts a third argument or omits it; without a code it
+  stores no `owner_security` row.
+- A one-line warning is logged once per process:
+  `[config] … OWNER_ACCESS_CODE is disabled — Studio sign-in is email + password only`.
+
+What does **not** change: the `profiles` authorisation gate (`role='owner'` and
+`is_authorized=true`), the rate limit (5 attempts / 15 minutes per IP), attempt
+auditing in `login_attempts`, the signed HttpOnly cookie with an 8-hour TTL, and
+every API/route authorisation check. The database schema is untouched, so the
+code can be re-enabled by changing the variable and redeploying.
+
+Security note recorded in the README: with the second factor off, the password
+is the only secret, so it must be long and unique, Supabase's leaked-password
+protection should stay on, and public sign-ups must stay disabled.
+
+### 18.1 Verified
+
+| Check | Result |
+| --- | --- |
+| `OWNER_ACCESS_CODE=disabled` + email/password | **200**, signed cookie issued |
+| same mode, wrong password | **401**, generic message |
+| same mode, arbitrary `code` sent | ignored, **200** |
+| login page markup in that mode | no code field, replacement hint rendered |
+| `OWNER_ACCESS_CODE=enabled`, no code | **422** with `fieldErrors.code` |
+| same mode, wrong 12-digit code | **401** |
+| same mode, correct code | **200** |
+| `npm run owner:create` without a code (disabled) | proceeds (network-blocked here, argument path verified) |
+| `npm run owner:create` without a code (enabled) | refused with the exact command to run |
+| `tsc`, `vitest` (47/47) | clean |

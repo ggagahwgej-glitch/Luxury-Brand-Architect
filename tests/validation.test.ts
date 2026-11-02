@@ -77,6 +77,9 @@ describe("inquiry validation", () => {
 describe("owner login validation", () => {
   it("requires a 12 digit access code", () => {
     expect(loginSchema.safeParse({ email: "a@b.com", password: "longpassword", code: "123456789012" }).success).toBe(true);
+    // The code is optional at the schema level (OWNER_ACCESS_CODE=disabled mode).
+    expect(loginSchema.safeParse({ email: "a@b.com", password: "longpassword" }).success).toBe(true);
+    expect(loginSchema.safeParse({ email: "a@b.com", password: "longpassword", code: "" }).success).toBe(true);
     expect(loginSchema.safeParse({ email: "a@b.com", password: "longpassword", code: "12345678901" }).success).toBe(false);
     expect(loginSchema.safeParse({ email: "a@b.com", password: "longpassword", code: "12345678901a" }).success).toBe(false);
   });

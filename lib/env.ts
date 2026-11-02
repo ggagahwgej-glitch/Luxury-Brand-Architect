@@ -68,6 +68,18 @@ export const supabaseServiceRoleKey = read("SUPABASE_SERVICE_ROLE_KEY") ?? read(
 export const supabaseBucket = read("SUPABASE_STORAGE_BUCKET") ?? "property-media";
 export const adminSessionSecret = read("ADMIN_SESSION_SECRET");
 
+/**
+ * Second factor for the Studio.
+ *
+ * Default: enabled — the owner enters email + password + the permanent
+ * 12-digit code. Set `OWNER_ACCESS_CODE=disabled` to sign in with just the
+ * email and password (the `owner_security` row is then not consulted at all).
+ * The flag is read server-side only; the browser never decides.
+ */
+export const ownerAccessCodeRequired = !["disabled", "off", "false", "0"].includes(
+  (read("OWNER_ACCESS_CODE") ?? "enabled").toLowerCase(),
+);
+
 export const isSupabaseConfigured = Boolean(supabaseUrl && supabaseAnonKey && supabaseServiceRoleKey);
 
 /**
@@ -156,6 +168,7 @@ export function logConfigDiagnostics() {
   if (!adminSessionSecret || adminSessionSecret.length < 32) warnings.push("ADMIN_SESSION_SECRET is missing or shorter than 32 characters");
   if (!publicSiteUrlIsExplicit) warnings.push(`NEXT_PUBLIC_SITE_URL is not set (using ${publicSiteUrl})`);
   if (read("ALLOW_LOCAL_PROVIDER") === "1") warnings.push("ALLOW_LOCAL_PROVIDER is set — remove it in production");
+  if (!ownerAccessCodeRequired) warnings.push("OWNER_ACCESS_CODE is disabled — Studio sign-in is email + password only");
 
   if (warnings.length) {
     console.error(`[config] deployment is missing recommended variables:\n  - ${warnings.join("\n  - ")}`);
