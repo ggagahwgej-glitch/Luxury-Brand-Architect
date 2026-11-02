@@ -40,6 +40,23 @@ The local provider writes to `.data/db.json` (git-ignored). Inside a production 
 5. Set env vars (`DATA_PROVIDER=supabase`, Supabase URL/anon/service-role keys, `ADMIN_SESSION_SECRET`, `SUPABASE_STORAGE_BUCKET`).
 6. `npm run seed:check` → `npm run build` → `npm run start`.
 
+## Deployment notes (Vercel / any CI)
+
+The public segment (`app/(public)/layout.tsx`) and `robots.txt` are marked
+`export const dynamic = "force-dynamic"`, together with `sitemap.xml`. Every
+public page reads site settings — and most read listings — from the database,
+so rendering happens per request:
+
+- `npm run build` needs **no** runtime environment variables and no reachable
+  database, so a Vercel build cannot fail while prerendering `/`.
+- Studio edits appear immediately (the API routes already call `revalidatePath`).
+- Environment variables only need to exist at **runtime**; set them for the
+  Production environment in Vercel (and redeploy after changing them).
+- Consequence: HTML is served with `Cache-Control: private, no-cache` — the CDN
+  caches images and static assets, not the rendered pages. If you later want
+  CDN-cached HTML, replace `force-dynamic` with `export const revalidate = 60`
+  on the public pages; the revalidation hooks are already in place.
+
 ## Scripts
 
 | Script | Purpose |

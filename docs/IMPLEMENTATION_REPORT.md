@@ -333,7 +333,54 @@ Verification after the fixes: `tsc` clean, `vitest run` 37 passing, production b
 
 ---
 
-## 13. Deployment checklist
+## 13. Rendering mode & build-time configuration
+
+Public routes are intentionally **request-rendered**, not prerendered:
+
+```ts
+// app/(public)/layout.tsx, app/(public)/page.tsx, app/robots.ts, app/sitemap.ts
+export const dynamic = "force-dynamic";
+```
+
+Why: every public page reads `site_settings`, and most also read listings, so a
+static build would (a) need runtime env plus a reachable database at build time,
+and (b) freeze content at deploy time — Studio edits would only appear after a
+redeploy.
+
+This was the direct cause of a Vercel build failure (`Error: No data provider is
+configured…` while pre-rendering `/`): the page used to be a static candidate,
+so the build executed `getRepository()` → `resolveDataProvider()` without any
+runtime env present. With the segment marked dynamic, `/`, `/legal/*`,
+`/properties*`, `/buy`, `/rent`, `/categories`, `/about`, `/contact`,
+`/settings` and `robots.txt` are all `ƒ` and the build performs no data access.
+
+Verified both ways:
+
+| Build | Result |
+| --- | --- |
+| `ALLOW_LOCAL_PROVIDER=1 npm run build` with `.env.local` + local provider | succeeds, 19 routes |
+| `npm run build` with **`.env.local` removed and every provider variable unset** | succeeds — no prerender of data-driven pages, no provider error |
+
+Only three routes remain static and none of them touch the database:
+`/_not-found`, `/admin` (a redirect stub) and `/icon.svg`.
+
+Guarding against transient failures: the homepage's data reads are wrapped in
+`.catch()` fallbacks (`EMPTY_PAGE`, `[]`), `getSiteSettings()` falls back to
+`DEFAULT_SITE_SETTINGS`, and `sitemap.ts` catches and still returns its static
+entries — so a database hiccup degrades to designed empty states instead of a
+500.
+
+Environment variables therefore only need to exist at **runtime**. In Vercel:
+set them for the Production environment (and Preview if used), then redeploy;
+`NEXT_PUBLIC_SITE_URL` must be the final HTTPS origin (no trailing slash) and
+`ADMIN_SESSION_SECRET` 32+ random characters. `ALLOW_LOCAL_PROVIDER` must not be
+set.
+
+Trade-off: HTML is now served `no-store` (CDN still caches images/assets). To
+get cached HTML later, swap `force-dynamic` for `export const revalidate = 60`;
+`revalidatePath` calls already exist in every mutation route.
+
+## 14. Deployment checklist
 
 1. `DATA_PROVIDER=supabase`, `NEXT_PUBLIC_SITE_URL=https://client-domain.com`, Supabase URL/anon/service-role keys, `ADMIN_SESSION_SECRET` (`openssl rand -base64 48`), `SUPABASE_STORAGE_BUCKET=property-media`. Do **not** set `ALLOW_LOCAL_PROVIDER` in production.
 2. Apply migrations 0001→0003 + `seed.sql`; create the owner Auth user; insert the `profiles` row as owner/authorized; run `npm run owner:hash` and apply the printed SQL.
