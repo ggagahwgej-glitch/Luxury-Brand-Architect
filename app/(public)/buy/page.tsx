@@ -3,6 +3,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { ArrowRight } from "lucide-react";
 import { getRepository, getSiteSettings } from "@/lib/data";
+import { emptyPage, safeData } from "@/lib/data/resilient";
 import { PageHero } from "@/components/layout/page-hero";
 import { PropertyExplorer } from "@/components/property/property-explorer";
 import { filtersToSearchParams, parseListingParams, toPropertyQuery, type RawSearchParams } from "@/lib/search-params";
@@ -32,8 +33,8 @@ export default async function BuyPage({ searchParams }: PageProps) {
   const repository = getRepository();
 
   const [result, locations] = await Promise.all([
-    repository.listProperties(toPropertyQuery(filters, { purpose: "sale" })),
-    repository.listLocationFacets(),
+    safeData("sale listings", repository.listProperties(toPropertyQuery(filters, { purpose: "sale" })), emptyPage(9)),
+    safeData("locations", repository.listLocationFacets(), []),
   ]);
 
   // Keep an over-long page number on a real page of results. The locked

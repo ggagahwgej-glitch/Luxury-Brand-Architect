@@ -586,3 +586,63 @@ clamping, malformed-UUID short-circuit and numeric bounds.
 
 **Still untested** (needs the live project): signed direct-to-Storage uploads,
 Storage CORS, `sb_secret_…` key acceptance, and auth against the real project.
+
+## 17. Going live without visible errors (round 5)
+
+The client supplied the full key set (publishable + secret + both legacy JWTs)
+for `https://aybxmtqozjkakhdefyqq.supabase.co`. They are configured in
+`.env.local` only (git-ignored); nothing secret is in the repository. This build
+sandbox still has no outbound access to `*.supabase.co`, so the live project
+cannot be driven from here — instead the go-live path was made one-paste short
+and every failure mode was exercised by pointing the app at an unreachable
+database.
+
+### 17.1 A database outage no longer produces a 500
+
+Measured before: with the provider configured but the database unreachable,
+`/buy`, `/rent`, `/categories`, `/contact` and `/properties/[slug]` all returned
+**500** (the generic error boundary). That is exactly what a paused Supabase
+project (free tier pauses after inactivity) or a half-finished setup looks like
+to a visitor.
+
+Now those pages use `safeData()` (`lib/data/resilient.ts`): the failure is logged
+as `[data] … unavailable: …` on the server, and the page renders its designed
+empty state. The property detail page renders a branded
+`UnavailableNotice` (with a WhatsApp shortcut) instead of the error screen, and
+its `generateMetadata` no longer throws. Re-measured with the same unreachable
+database: **every public route returns 200** — `/`, `/properties`, `/buy`,
+`/rent`, `/categories`, `/about`, `/contact`, `/settings`, `/admin/login`,
+`/robots.txt`, `/sitemap.xml`, `/properties/<anything>`.
+
+Studio pages deliberately keep their error boundary: an owner must see a real
+error when a write or a private read fails, not a silent empty table.
+
+The sign-in screen now answers **503** with "The authentication service could not
+be reached. Check the Supabase URL and keys…" instead of pretending the password
+was wrong (which previously led owners to lock themselves out).
+
+### 17.2 One-paste setup, one-command owner
+
+| Artefact | Purpose |
+| --- | --- |
+| `supabase/apply-all.sql` | migrations 0001→0003 + seed concatenated by `npm run sql:bundle`; pasted once into the SQL editor |
+| `npm run owner:create -- <email> <password> <code>` | creates the Auth user **email-confirmed**, upserts `profiles` (owner/authorised), stores the bcrypt code hash, then reads all three back to verify |
+| `npm run verify:sql` | now also applies `apply-all.sql` to a fresh in-process database, so the bundle cannot drift from the migrations (**37 checks**) |
+| `docs/SUPABASE_SETUP.md` | the seven steps, plus a troubleshooting table mapping each error message to its fix |
+
+### 17.3 Verified in this round
+
+| Check | Result |
+| --- | --- |
+| `npx tsc --noEmit` | clean |
+| `npx vitest run` | 47/47 |
+| `npm run verify:sql` | 37/37 (including the bundle) |
+| Local provider build + `next start` | all public routes 200, Studio 307 → login |
+| **Supabase mode with an unreachable database** | all 12 public routes 200, detail page shows the branded notice, login answers 503 with the configuration message |
+| `npm run owner:create` argument validation / offline error path | clear messages, non-zero exit |
+| Bundle → database | `apply-all.sql` creates 7 tables and 15 policies on a clean database |
+
+**Still needs the live project** (outbound access is blocked here): signed
+direct-to-Storage uploads, Storage CORS, real Supabase Auth sign-in and
+`sb_secret_…` acceptance — all covered by `npm run seed:check`, which prints the
+fix for every ✗.

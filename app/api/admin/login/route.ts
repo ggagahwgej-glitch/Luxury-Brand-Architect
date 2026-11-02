@@ -67,7 +67,7 @@ export async function POST(request: Request) {
   }
 
   if (!result.ok) {
-    const status = result.reason === "locked" ? 429 : result.reason === "config" ? 500 : 401;
+    const status = result.reason === "locked" ? 429 : result.reason === "config" ? 503 : 401;
     return NextResponse.json(
       { ok: false, error: result.message, retryAfterSeconds: result.retryAfterSeconds },
       { status, headers: result.retryAfterSeconds ? { "Retry-After": String(result.retryAfterSeconds) } : undefined },

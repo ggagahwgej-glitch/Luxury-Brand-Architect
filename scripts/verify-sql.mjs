@@ -19,7 +19,7 @@ const read = (file) =>
     "-- (extension line skipped: PGlite has no pgcrypto)",
   );
 
-const BOOTSTRAP = `
+const bootstrapSql = `
 create schema if not exists auth;
 create table if not exists auth.users (
   id uuid primary key default gen_random_uuid(),
@@ -58,7 +58,7 @@ function check(name, ok, detail = "") {
 }
 
 const db = await PGlite.create();
-await db.exec(BOOTSTRAP);
+await db.exec(bootstrapSql);
 
 for (const file of [
   "supabase/migrations/0001_initial_schema.sql",
@@ -252,6 +252,26 @@ try {
   );
 } catch (error) {
   check("owner provisioning SQL from `npm run owner:hash` works", false, error.message.split("\n")[0]);
+}
+
+// ── the copy-paste bundle must match the migrations ────────────────────────
+try {
+  const bundleDb = await PGlite.create();
+  await bundleDb.exec(bootstrapSql);
+  await bundleDb.exec(read("supabase/apply-all.sql"));
+  const bundleTables = await bundleDb.query(
+    `select count(*)::int as n from pg_tables where schemaname = 'public' and tablename in
+     ('profiles','properties','property_media','inquiries','site_settings','owner_security','login_attempts')`,
+  );
+  const bundlePolicies = await bundleDb.query(`select count(*)::int as n from pg_policies where schemaname = 'public'`);
+  check(
+    "supabase/apply-all.sql applies cleanly and matches the migrations",
+    bundleTables.rows[0].n === 7 && bundlePolicies.rows[0].n >= 10,
+    `${bundleTables.rows[0].n} tables, ${bundlePolicies.rows[0].n} policies`,
+  );
+  await bundleDb.close();
+} catch (error) {
+  check("supabase/apply-all.sql applies cleanly and matches the migrations", false, error.message.split("\n")[0]);
 }
 
 const failures = results.filter((result) => !result.ok).length;
