@@ -71,13 +71,15 @@ export const adminSessionSecret = read("ADMIN_SESSION_SECRET");
 /**
  * Second factor for the Studio.
  *
- * Default: enabled — the owner enters email + password + the permanent
- * 12-digit code. Set `OWNER_ACCESS_CODE=disabled` to sign in with just the
- * email and password (the `owner_security` row is then not consulted at all).
+ * Default: **off** — the owner signs in with the owner email + password, and the
+ * `profiles` row must additionally be `role='owner'` and `is_authorized=true`.
+ * Set `OWNER_ACCESS_CODE=enabled` to add the permanent 12-digit code as a third
+ * factor; the `owner_security` row is only read in that mode.
+ *
  * The flag is read server-side only; the browser never decides.
  */
-export const ownerAccessCodeRequired = !["disabled", "off", "false", "0"].includes(
-  (read("OWNER_ACCESS_CODE") ?? "enabled").toLowerCase(),
+export const ownerAccessCodeRequired = ["enabled", "on", "true", "1"].includes(
+  (read("OWNER_ACCESS_CODE") ?? "disabled").toLowerCase(),
 );
 
 export const isSupabaseConfigured = Boolean(supabaseUrl && supabaseAnonKey && supabaseServiceRoleKey);
@@ -168,7 +170,8 @@ export function logConfigDiagnostics() {
   if (!adminSessionSecret || adminSessionSecret.length < 32) warnings.push("ADMIN_SESSION_SECRET is missing or shorter than 32 characters");
   if (!publicSiteUrlIsExplicit) warnings.push(`NEXT_PUBLIC_SITE_URL is not set (using ${publicSiteUrl})`);
   if (read("ALLOW_LOCAL_PROVIDER") === "1") warnings.push("ALLOW_LOCAL_PROVIDER is set — remove it in production");
-  if (!ownerAccessCodeRequired) warnings.push("OWNER_ACCESS_CODE is disabled — Studio sign-in is email + password only");
+  if (!ownerAccessCodeRequired)
+    warnings.push("Studio sign-in is email + password only (set OWNER_ACCESS_CODE=enabled to require the 12-digit code)");
 
   if (warnings.length) {
     console.error(`[config] deployment is missing recommended variables:\n  - ${warnings.join("\n  - ")}`);

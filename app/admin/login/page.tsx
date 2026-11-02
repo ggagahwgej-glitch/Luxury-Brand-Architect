@@ -7,6 +7,7 @@ import { OwnerLoginForm } from "@/components/admin/login-form";
 import { getSiteSettings } from "@/lib/data";
 import { safeAdminPath } from "@/lib/utils";
 import { ownerAccessCodeRequired } from "@/lib/env";
+import { databaseHealth } from "@/lib/data/health";
 
 export const metadata: Metadata = {
   title: "Owner Sign In",
@@ -18,7 +19,7 @@ export default async function AdminLoginPage({
 }: {
   searchParams: Promise<{ next?: string }>;
 }) {
-  const [{ next }, settings] = await Promise.all([searchParams, getSiteSettings()]);
+  const [{ next }, settings, health] = await Promise.all([searchParams, getSiteSettings(), databaseHealth()]);
   const nextPath = safeAdminPath(next);
 
   return (
@@ -74,6 +75,16 @@ export default async function AdminLoginPage({
               <h2 className="font-display text-2xl text-ivory">Owner sign in</h2>
             </div>
           </div>
+
+          {!health.ok ? (
+            <div role="alert" className="mb-5 border border-gold/25 bg-gold/[0.06] px-4 py-3.5 text-[0.76rem] leading-relaxed text-gold-soft">
+              <p className="font-medium">First-time setup not finished</p>
+              <p className="mt-1 text-silver/80">{health.detail}</p>
+              <p className="mt-2 text-silver/60">
+                Then provision the owner account: <code className="text-gold-soft">npm run owner:create -- &lt;email&gt; &lt;password&gt;</code>
+              </p>
+            </div>
+          ) : null}
 
           <OwnerLoginForm nextPath={nextPath} codeRequired={ownerAccessCodeRequired} />
 

@@ -29,7 +29,7 @@ LOCAL_OWNER_CODE=741852963147
 The local provider writes to `.data/db.json` (git-ignored). Inside a production build it is refused unless `ALLOW_LOCAL_PROVIDER=1` is set, and a production build with *no* provider configured now fails fast with a clear message instead of quietly serving demo data.
 
 - Public site: `/`
-- Studio: `/admin/login` (owner email + password; the optional 12-digit code is controlled by `OWNER_ACCESS_CODE`)
+- Studio: `/admin/login` (owner email + password; the 12-digit code is optional, see below)
 - The admin link is deliberately absent from the main navigation — it lives on `/settings` and in the footer.
 
 ## Production setup (one Supabase project per client)
@@ -75,14 +75,22 @@ then verifies it:
 npm run owner:create -- owner@client.com "a-strong-password" 741852963147
 ```
 
-**Second factor:** with `OWNER_ACCESS_CODE=enabled` (default) the Studio asks for
-email + password + the permanent 12-digit code. With
-`OWNER_ACCESS_CODE=disabled` it asks only for the owner email and password —
-useful when the owner prefers a single strong password. Then omit the code:
+**Two-factor by default.** The Studio asks for the owner email + password, and
+the `profiles` row must be `role='owner'` **and** `is_authorized=true`. Provision
+it with:
 
 ```bash
 npm run owner:create -- owner@client.com "a-strong-password"
 ```
+
+**Want the permanent 12-digit code as a third factor?** Set
+`OWNER_ACCESS_CODE=enabled` in `.env.local` / Vercel, then:
+
+```bash
+npm run owner:create -- owner@client.com "a-strong-password" 741852963147
+```
+
+Nothing else changes — the flag only adds the third check.
 
 Either way the account must be `role='owner'` **and** `is_authorized=true` in
 `profiles`; the flag only controls the third check, never the authorisation.
@@ -100,10 +108,11 @@ Without it, files above 4 MB cannot upload directly and videos are refused.
 
 ### 5b. Sign-in security
 
-When the second factor is disabled, the Studio password becomes the single
-guard, so: use a long unique password stored in a password manager, keep
-Supabase's “Password strength and leaked password protection” enabled, and keep
-"Allow new users to sign up" off. The login endpoint is rate limited (5 attempts
+In the default (two-factor) mode the Studio password is the single secret, so:
+use a long unique password stored in a password manager, keep Supabase's
+“Password strength and leaked password protection” enabled, and keep
+"Allow new users to sign up" off. Set `OWNER_ACCESS_CODE=enabled` if you want the
+additional 12-digit factor. The login endpoint is rate limited (5 attempts
 per 15 minutes per IP) and every attempt is audited in `login_attempts`.
 
 ### 6. Verify, then deploy

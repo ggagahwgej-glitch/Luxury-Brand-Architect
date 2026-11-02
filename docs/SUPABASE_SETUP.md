@@ -100,14 +100,14 @@ hash of the code in `owner_security` (the code itself is never stored).
 
 1. owner email + password (Supabase Auth)
 2. the `profiles` row is `role = 'owner'` **and** `is_authorized = true`
-3. *(only when `OWNER_ACCESS_CODE=enabled`)* the permanent 12-digit code,
-   compared against the bcrypt hash in `owner_security` — five wrong codes lock
-   the factor for 15 minutes
+3. *(optional, only when `OWNER_ACCESS_CODE=enabled`)* the permanent 12-digit
+   code, compared against the bcrypt hash in `owner_security` — five wrong codes
+   lock the factor for 15 minutes
 
-This deployment sets `OWNER_ACCESS_CODE=disabled`, so the Studio asks for
-**email + password only**. Add `OWNER_ACCESS_CODE=enabled` to `.env.local` and
-the Vercel environment (then redeploy) to bring the code back — the SQL and the
-`owner_security` rows do not need to change.
+By default the Studio asks for **email + password only**. Add
+`OWNER_ACCESS_CODE=enabled` to `.env.local` and the Vercel environment (then
+redeploy) to require the code — the SQL and the `owner_security` rows do not
+need to change.
 
 The session is an HttpOnly, SameSite=Lax cookie that expires after 8 hours; the
 login endpoint is rate limited (5 attempts / 15 minutes per IP) and every attempt
@@ -156,8 +156,8 @@ preview mode). Pass `-- --local` to check the preview configuration itself.
 ## 7. First run
 
 1. Deploy (or `npm run build && npm run start`).
-2. Open `/admin/login`, sign in with the owner email + password (no code when
-   `OWNER_ACCESS_CODE=disabled`).
+2. Open `/admin/login`, sign in with the owner email + password (plus the code
+   only if you enabled it).
 3. Studio → Properties → New: add the first listing, upload photographs, publish.
 4. Public site → the listing appears on `/`, `/properties`, `/buy` or `/rent`.
 5. Studio → Settings: set the real business name, phone, WhatsApp, email, address,
@@ -174,7 +174,9 @@ preview mode). Pass `-- --local` to check the preview configuration itself.
 | Sign-in: "The Owner Studio is not configured…" | `SUPABASE_SERVICE_ROLE_KEY` or `ADMIN_SESSION_SECRET` missing | step 1, then redeploy |
 | Sign-in: "This account is not authorised" | `profiles` row missing / not authorised | step 4 |
 | Sign-in: "The 12-digit access code has not been configured" | `OWNER_ACCESS_CODE` is enabled but no `owner_security` row exists | step 3 with a code, or set `OWNER_ACCESS_CODE=disabled` |
-| The code field appears although it was disabled | `OWNER_ACCESS_CODE` missing on the deployment | add it and redeploy (it is read at runtime) |
+| The code field appears although it is not wanted | `OWNER_ACCESS_CODE=enabled` is set on the deployment | remove it (or set `disabled`) and redeploy |
+| Login: "First-time setup not finished" on the sign-in screen | the SQL has not been applied / the secret key is wrong | the box names the exact cause; run `supabase/apply-all.sql` |
+| Login: "No owner profile exists for this account yet" | Auth user exists but `profiles` was never provisioned | `npm run owner:create -- <email> <password>` |
 | Sign-in: "Email not confirmed" | user created without Auto Confirm | confirm the user in Authentication → Users |
 | Public pages show "register is being prepared" | no published listings yet | expected on a fresh project |
 | Enquiry form: "could not be saved right now" | service key wrong or schema missing | `npm run seed:check` |
