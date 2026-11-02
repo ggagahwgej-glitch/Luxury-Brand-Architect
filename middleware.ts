@@ -14,6 +14,35 @@ function safeSecret() {
   return secret && secret.length >= 32 ? secret : null;
 }
 
+/**
+ * Defence in depth for state-changing Studio calls: browsers send Origin (and
+ * Sec-Fetch-Site) on cross-site POSTs, so a request that does not belong to us
+ * is refused before it reaches a route handler.
+ */
+function isCrossSite(request: NextRequest) {
+  const method = request.method.toUpperCase();
+  if (method === "GET" || method === "HEAD" || method === "OPTIONS") return false;
+
+  const fetchSite = request.headers.get("sec-fetch-site");
+  if (fetchSite && fetchSite !== "same-origin" && fetchSite !== "none") return true;
+
+  const origin = request.headers.get("origin");
+  if (!origin) return false;
+
+  const forwardedHost = request.headers.get("x-forwarded-host")?.split(",")[0]?.trim();
+  const host = forwardedHost || request.headers.get("host") || request.nextUrl.host;
+  try {
+    return new URL(origin).host !== host;
+  } catch {
+    return true;
+  }
+}
+
+function withNoIndex(response: NextResponse) {
+  response.headers.set("X-Robots-Tag", "noindex, nofollow, noarchive");
+  return response;
+}
+
 function redirectToLogin(request: NextRequest) {
   const url = request.nextUrl.clone();
   // Preserve the full requested Studio URL (path + filters) so the owner lands
@@ -34,6 +63,9 @@ export async function middleware(request: NextRequest) {
   const isLoginRoute = pathname === "/admin/login";
 
   if (isApi) {
+    if (isCrossSite(request)) {
+      return NextResponse.json({ ok: false, error: "Request origin rejected." }, { status: 403 });
+    }
     // Sign-in and sign-out must work without a (valid) session: the logout
     // route's whole job is clearing a cookie that may already be expired.
     if (pathname === "/api/admin/login" || pathname === "/api/admin/logout") return NextResponse.next();
@@ -57,15 +89,15 @@ export async function middleware(request: NextRequest) {
   }
 
   // /admin and every nested Studio route
-  if (!session) return redirectToLogin(request);
+  if (!session) return withNoIndex(redirectToLogin(request));
 
   if (pathname === "/admin") {
     const url = request.nextUrl.clone();
     url.pathname = "/admin/dashboard";
-    return NextResponse.redirect(url);
+    return withNoIndex(NextResponse.redirect(url));
   }
 
-  return NextResponse.next();
+  return withNoIndex(NextResponse.next());
 }
 
 export const config = {

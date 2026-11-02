@@ -32,6 +32,7 @@ import { AREA_UNITS, PROPERTY_STATUSES, PROPERTY_TYPES } from "@/lib/types";
 import type { AreaUnit, Property, PropertyStatus, PropertyType, Purpose } from "@/lib/types";
 import { formatDateTime } from "@/lib/format";
 import { slugify } from "@/lib/utils";
+import { uploadFile } from "@/lib/upload-client";
 import { cn } from "@/lib/utils";
 
 interface MediaItem {
@@ -104,42 +105,6 @@ function initialState(property?: Property): FormState {
       isCover: media.isCover,
     })),
   };
-}
-
-function uploadFile(
-  file: File,
-  kind: "image" | "video",
-  onProgress: (percent: number) => void,
-): Promise<{ url: string; storagePath: string | null; mediaType: "image" | "video" }> {
-  return new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-    const body = new FormData();
-    body.append("kind", kind);
-    body.append("files", file);
-
-    xhr.open("POST", "/api/admin/media/upload");
-    xhr.upload.onprogress = (event) => {
-      if (event.lengthComputable) onProgress(Math.round((event.loaded / event.total) * 100));
-    };
-    xhr.onload = () => {
-      try {
-        const payload = JSON.parse(xhr.responseText) as {
-          ok?: boolean;
-          error?: string;
-          files?: { url: string; storagePath: string | null; mediaType: "image" | "video" }[];
-        };
-        if (xhr.status >= 200 && xhr.status < 300 && payload.ok && payload.files?.[0]) {
-          resolve(payload.files[0]);
-        } else {
-          reject(new Error(payload.error ?? "Upload failed."));
-        }
-      } catch {
-        reject(new Error("The upload returned an unexpected response."));
-      }
-    };
-    xhr.onerror = () => reject(new Error("The upload could not reach the server."));
-    xhr.send(body);
-  });
 }
 
 export function PropertyForm({ property }: { property?: Property }) {

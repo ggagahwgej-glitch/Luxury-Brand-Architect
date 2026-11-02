@@ -9,6 +9,7 @@ import { ACCENT_PRESETS, DISPLAY_FONT_PRESETS } from "@/lib/constants";
 import type { AccentPreset, DisplayFontPreset, SiteSettings, Testimonial } from "@/lib/types";
 import { uuid } from "@/lib/utils";
 import { cn } from "@/lib/utils";
+import { uploadFile } from "@/lib/upload-client";
 
 const TABS = [
   { id: "branding", label: "Branding" },
@@ -21,27 +22,6 @@ const TABS = [
 ] as const;
 
 type TabId = (typeof TABS)[number]["id"];
-
-function uploadBrandFile(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-    const body = new FormData();
-    body.append("kind", "brand");
-    body.append("files", file);
-    xhr.open("POST", "/api/admin/media/upload");
-    xhr.onload = () => {
-      try {
-        const payload = JSON.parse(xhr.responseText) as { ok?: boolean; error?: string; files?: { url: string }[] };
-        if (xhr.status < 300 && payload.ok && payload.files?.[0]) resolve(payload.files[0].url);
-        else reject(new Error(payload.error ?? "Upload failed."));
-      } catch {
-        reject(new Error("Unexpected response from the upload endpoint."));
-      }
-    };
-    xhr.onerror = () => reject(new Error("The upload could not reach the server."));
-    xhr.send(body);
-  });
-}
 
 function ImageField({
   label,
@@ -87,7 +67,8 @@ function ImageField({
                 setUploading(true);
                 setError("");
                 try {
-                  onChange(await uploadBrandFile(file));
+                  const uploaded = await uploadFile(file, "brand");
+                  onChange(uploaded.url);
                 } catch (uploadError) {
                   setError(uploadError instanceof Error ? uploadError.message : "Upload failed.");
                 } finally {

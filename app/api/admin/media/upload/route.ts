@@ -2,7 +2,8 @@ import { requireAdminApi } from "@/lib/auth/admin";
 import { isSameOrigin, jsonError, jsonOk } from "@/lib/api";
 import { storeUpload, UploadError, type UploadKind } from "@/lib/storage";
 import { checkRateLimit, UPLOAD_RATE_LIMIT } from "@/lib/auth/rate-limit";
-import { MAX_IMAGES_PER_PROPERTY } from "@/lib/constants";
+import { MAX_IMAGES_PER_PROPERTY, MAX_PROXY_UPLOAD_BYTES } from "@/lib/constants";
+import { resolveDataProvider } from "@/lib/env";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -23,6 +24,16 @@ export async function POST(request: Request) {
     return jsonError(`Upload limit reached. Please wait ${Math.ceil(limit.retryAfterSeconds / 60)} minute(s).`, 429, {
       retryAfterSeconds: limit.retryAfterSeconds,
     });
+  }
+
+  // Large files must travel browser → Supabase Storage directly: Vercel
+  // rejects serverless request bodies above ~4.5 MB before they reach us.
+  const declaredLength = Number(request.headers.get("content-length") ?? "0");
+  if (resolveDataProvider() === "supabase" && declaredLength > MAX_PROXY_UPLOAD_BYTES + 256 * 1024) {
+    return jsonError(
+      `This file is too large to pass through the server (limit ${Math.floor(MAX_PROXY_UPLOAD_BYTES / (1024 * 1024))} MB). Upload it again so it goes directly to storage.`,
+      413,
+    );
   }
 
   let form: FormData;

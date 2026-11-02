@@ -11,7 +11,31 @@ function read(name: string): string | undefined {
   return value && value.trim().length > 0 ? value.trim() : undefined;
 }
 
-export const publicSiteUrl = (read("NEXT_PUBLIC_SITE_URL") ?? "http://localhost:3000").replace(/\/$/, "");
+/**
+ * Canonical site origin.
+ *
+ * Order: explicit `NEXT_PUBLIC_SITE_URL` → Vercel's own deployment hosts →
+ * localhost. The Vercel fallbacks matter because canonical URLs, OG tags,
+ * robots.txt and the sitemap are built from this value at request time; without
+ * them a deployment that forgets the variable would advertise localhost.
+ */
+function resolvePublicSiteUrl() {
+  const explicit = read("NEXT_PUBLIC_SITE_URL");
+  if (explicit) return explicit.replace(/\/+$/, "");
+
+  const vercelHost = read("VERCEL_PROJECT_PRODUCTION_URL") ?? read("VERCEL_URL");
+  if (vercelHost) {
+    const host = vercelHost.replace(/^https?:\/\//, "").replace(/\/+$/, "");
+    return `https://${host}`;
+  }
+
+  return "http://localhost:3000";
+}
+
+export const publicSiteUrl = resolvePublicSiteUrl();
+
+/** True when the origin was configured explicitly (not derived from the host). */
+export const publicSiteUrlIsExplicit = Boolean(read("NEXT_PUBLIC_SITE_URL"));
 
 export const supabaseUrl = read("NEXT_PUBLIC_SUPABASE_URL");
 export const supabaseAnonKey = read("NEXT_PUBLIC_SUPABASE_ANON_KEY");
@@ -28,6 +52,9 @@ export const isSupabaseConfigured = Boolean(supabaseUrl && supabaseAnonKey && su
  *  - the local preview provider is never allowed in a production build.
  */
 export function localProviderAllowed() {
+  // The preview provider writes to the local filesystem, which is read-only and
+  // ephemeral on Vercel — never allow it there, even if someone opts in.
+  if (read("VERCEL") === "1") return false;
   // Outside a production build the preview provider is always available.
   // Inside one it must be opted into explicitly, so a deployment that simply
   // forgot its environment variables fails loudly instead of quietly serving
@@ -84,4 +111,27 @@ export function localOwnerCredentials(): { email: string; password: string; code
   const code = read("LOCAL_OWNER_CODE");
   if (!email || !password || !code) return null;
   return { email, password, code };
+}
+
+/**
+ * Configuration diagnostics for server logs. Called from the root layout so a
+ * misconfigured deployment prints an actionable line instead of failing with an
+ * opaque 500. Never throws and never logs secret values.
+ */
+let diagnosticsLogged = false;
+export function logConfigDiagnostics() {
+  if (diagnosticsLogged || process.env.NODE_ENV !== "production") return;
+  diagnosticsLogged = true;
+
+  const warnings: string[] = [];
+  if (!process.env.NEXT_PUBLIC_SUPABASE_URL) warnings.push("NEXT_PUBLIC_SUPABASE_URL is not set");
+  if (!process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) warnings.push("NEXT_PUBLIC_SUPABASE_ANON_KEY is not set");
+  if (!process.env.SUPABASE_SERVICE_ROLE_KEY) warnings.push("SUPABASE_SERVICE_ROLE_KEY is not set");
+  if (!adminSessionSecret || adminSessionSecret.length < 32) warnings.push("ADMIN_SESSION_SECRET is missing or shorter than 32 characters");
+  if (!publicSiteUrlIsExplicit) warnings.push(`NEXT_PUBLIC_SITE_URL is not set (using ${publicSiteUrl})`);
+  if (read("ALLOW_LOCAL_PROVIDER") === "1") warnings.push("ALLOW_LOCAL_PROVIDER is set — remove it in production");
+
+  if (warnings.length) {
+    console.error(`[config] deployment is missing recommended variables:\n  - ${warnings.join("\n  - ")}`);
+  }
 }

@@ -5,6 +5,7 @@ import { ACCENT_PRESETS, DISPLAY_FONT_PRESETS } from "@/lib/constants";
 import { SITE } from "@/lib/config/site";
 import { PreviewBadge } from "@/components/layout/preview-badge";
 import { jsonLdSafe } from "@/lib/utils";
+import { logConfigDiagnostics } from "@/lib/env";
 
 export const viewport: Viewport = {
   width: "device-width",
@@ -68,6 +69,9 @@ export async function generateMetadata(): Promise<Metadata> {
 }
 
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  // Logs a single actionable warning when a production deployment is missing
+  // environment variables (never throws, never prints secrets).
+  logConfigDiagnostics();
   const settings = await getSiteSettings();
   const accent = ACCENT_PRESETS[settings.design.accent] ?? ACCENT_PRESETS.imperial_gold;
   const displayFont = DISPLAY_FONT_PRESETS[settings.design.displayFont] ?? DISPLAY_FONT_PRESETS.cormorant;

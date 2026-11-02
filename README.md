@@ -56,6 +56,27 @@ so rendering happens per request:
   caches images and static assets, not the rendered pages. If you later want
   CDN-cached HTML, replace `force-dynamic` with `export const revalidate = 60`
   on the public pages; the revalidation hooks are already in place.
+- If `NEXT_PUBLIC_SITE_URL` is omitted the app falls back to Vercel's own
+  deployment hosts (`VERCEL_PROJECT_PRODUCTION_URL`, then `VERCEL_URL`), so
+  canonical URLs never advertise `localhost`. Set it anyway.
+- Missing configuration is reported, not guessed: the server logs one
+  `[config]` line listing absent variables, and `/admin/login` answers 503 with
+  the exact variables to add. `ALLOW_LOCAL_PROVIDER` is ignored on Vercel.
+
+### Large uploads (important)
+
+Vercel caps serverless request bodies at ~4.5 MB, while the app accepts 8 MB
+images and 64 MB videos. Studio uploads therefore go **browser → Supabase
+Storage** using a signed URL from `POST /api/admin/media/upload-url`; the file
+never passes through a function. The old proxy route remains as a fallback for
+the local preview provider and for small files (≤ 4 MB) and returns `413` above
+that.
+
+One-time setup: Supabase → Storage → `property-media` → Settings → **CORS** —
+allow the site origin (e.g. `https://client-domain.com`, plus
+`http://localhost:3000` for local work) for `GET`/`PUT`/`POST` with
+`Content-Type`, `cache-control` and `x-upsert` headers. Without it the direct PUT
+is blocked and uploads fall back to the 4 MB proxy path.
 
 ## Scripts
 

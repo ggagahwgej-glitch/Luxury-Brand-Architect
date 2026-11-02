@@ -3,7 +3,7 @@ import { loginSchema } from "@/lib/validation/auth";
 import { authenticateOwner } from "@/lib/auth/owner";
 import { createSessionToken } from "@/lib/auth/token";
 import { sessionCookieOptions, ADMIN_COOKIE } from "@/lib/auth/session";
-import { assertAdminSecret } from "@/lib/env";
+import { assertAdminSecret, resolveDataProvider } from "@/lib/env";
 import { checkRateLimit, hashIdentifier, LOGIN_RATE_LIMIT, resetRateLimit } from "@/lib/auth/rate-limit";
 import { clientIp } from "@/lib/auth/admin";
 import { isSameOrigin, jsonError, readJson } from "@/lib/api";
@@ -38,6 +38,19 @@ export async function POST(request: Request) {
       if (key && !fieldErrors[key]) fieldErrors[key] = issue.message;
     }
     return jsonError("Please correct the highlighted fields.", 422, { fieldErrors });
+  }
+
+  // A deployment that has not been given its environment variables should say
+  // so plainly instead of failing with a generic error on every attempt.
+  try {
+    resolveDataProvider();
+    assertAdminSecret();
+  } catch (error) {
+    console.error("[login] deployment is not configured:", error);
+    return jsonError(
+      "The Owner Studio is not configured on this deployment yet. Add the Supabase and ADMIN_SESSION_SECRET environment variables, then redeploy.",
+      503,
+    );
   }
 
   let result;

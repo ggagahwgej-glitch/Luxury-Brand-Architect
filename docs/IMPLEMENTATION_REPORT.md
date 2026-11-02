@@ -387,3 +387,112 @@ get cached HTML later, swap `force-dynamic` for `export const revalidate = 60`;
 3. `npm ci && npm run build && npm run start` (or deploy to Vercel with the same variables). `next start` binds `0.0.0.0:3000`; on Vercel no port config is needed.
 4. Post-deploy: `npm run seed:check` against production env, log in at `/admin/login`, upload one property with images, publish it, submit a test inquiry, confirm it appears `new` in the studio, then delete the test records.
 5. Confirm HTTPS (cookie `Secure` turns on automatically), and that `/admin` is `noindex` in the deployed HTML.
+
+## 15. Pre-deployment audit (Vercel)
+
+A full pass over environment fallbacks, client/server boundaries, API route
+configuration, middleware, and App Router segments — done before the first real
+deployment so the deploy throws nothing unexpected.
+
+### 15.1 Environment fallbacks
+
+| Item | Before | Now |
+| --- | --- | --- |
+| Site origin | `NEXT_PUBLIC_SITE_URL` or `http://localhost:3000` | explicit → `VERCEL_PROJECT_PRODUCTION_URL` → `VERCEL_URL` → localhost. Canonical/OG/sitemap/robots no longer advertise localhost on a deployment that forgot the variable. |
+| Local provider on Vercel | allowed if `ALLOW_LOCAL_PROVIDER=1` | hard-blocked when `VERCEL=1` (the FS is read-only and ephemeral). |
+| Diagnostics | silent | `logConfigDiagnostics()` runs once per server process from the root layout and logs which recommended variables are missing (never prints values). |
+| Studio with no config | generic 500 on sign-in | `/api/admin/login` pre-checks provider + secret and returns **503** with the exact variables to add. |
+
+### 15.2 Client/server boundaries
+
+- No client component imports `lib/env`, `lib/data`, `lib/auth` or `lib/storage`
+  (grep-verified). Client code only touches `lib/config/site`, `lib/constants`
+  and the new `lib/upload-client` ("use client", no server imports).
+- `lib/storage` keeps `import "server-only"` so a future client import fails at
+  build time instead of leaking the service-role client.
+- `serverExternalPackages: ["bcryptjs"]` retained (native binding must not be
+  bundled).
+
+### 15.3 Uploads: Vercel body limit (real bug found)
+
+Supabase/`local` uploads were both streamed through
+`POST /api/admin/media/upload`, but Vercel caps function request bodies at
+≈4.5 MB while the app allowed 8 MB images and 64 MB videos — every large photo
+or any video would have failed in production.
+
+- New `POST /api/admin/media/upload-url` (auth + same-origin + rate limit +
+  Zod) returns a **signed Supabase upload URL** (`strategy: "direct"`) so the
+  browser PUTs the file straight to Storage with XHR progress. Files never pass
+  through a function.
+- The proxy route stays as the fallback (local preview provider, or a failed
+  signed PUT for small files) and now rejects oversized bodies with a clear
+  **413** (`MAX_PROXY_UPLOAD_BYTES` = 4 MB).
+- `lib/upload-client.ts` implements the strategy switch for both the property
+  form (images/video) and the settings form (brand assets), preserving progress
+  and surfacing validation/auth/rate-limit errors verbatim.
+- Requires the storage bucket CORS policy to allow the site origin — see
+  README ("Deployment notes").
+- Dead `experimental.serverActions.bodySizeLimit` removed; the project does not
+  use Server Actions.
+
+### 15.4 Images, headers, middleware
+
+- `images.remotePatterns` adds `**.supabase.co/storage/v1/object/public/**` so
+  `next/image` works even when `NEXT_PUBLIC_SUPABASE_URL` is only present at
+  runtime (the previous list was computed at build time and would have made
+  every uploaded photo throw).
+- `images.minimumCacheTTL` = 30 days (upload names are immutable).
+- Headers: HSTS (2 years, `includeSubDomains`), `X-DNS-Prefetch-Control: on`
+  added to the existing `nosniff` / `SAMEORIGIN` / referrer / permissions set.
+- Middleware: cross-site state-changing `/api/admin/*` calls are rejected (403)
+  from `Origin` + `Sec-Fetch-Site` before routing; every Studio response carries
+  `X-Robots-Tag: noindex, nofollow, noarchive`.
+
+### 15.5 App Router segments
+
+- Added `app/(public)/error.tsx`, `app/admin/error.tsx` and
+  `app/admin/(studio)/error.tsx`. Previously a failed fetch on a public page, the
+  sign-in screen or inside the Studio surfaced as the global error screen; now
+  each keeps its own chrome (site header/footer, or the Studio sidebar) and
+  offers retry.
+- **Soft-404 caught during this audit:** adding `loading.tsx` above a page that
+  calls `notFound()` makes Next stream the shell first, so an unknown property
+  URL answered **200** with the 404 design instead of a real 404. Those loading
+  states were therefore limited to segments that never 404 — the listing
+  (`/properties`) and the dashboard, which already had them. Unknown slugs and
+  unknown Studio property ids now return a true 404.
+- All 13 API routes are `runtime = "nodejs"` + `dynamic = "force-dynamic"`;
+  only `/_not-found`, `/admin` and `/icon.svg` are static.
+- Every referenced local asset exists (`public/seed/*`, `app/icon.svg`) — checked
+  against the code and the seeded media rows.
+
+### 15.6 Verified after the changes
+
+| Check | Result |
+| --- | --- |
+| `npx tsc --noEmit` | clean |
+| `npx vitest run` | 37/37 (5 files) |
+| `npm run build` with `.env.local` removed and provider vars unset | exit 0 |
+| `ALLOW_LOCAL_PROVIDER=1 npm run build` + `next start` | exit 0, 15 routes served |
+| Public smoke (`/`, `/properties`, `/properties/[slug]`, `/buy`, `/rent`, `/categories`, `/about`, `/contact`, `/settings`, `/admin/login`, `/robots.txt`, `/sitemap.xml`) | all 200 |
+| Unauthenticated `/admin/dashboard` | 307 → `/admin/login?next=…` |
+| Unknown property slug / unknown Studio property id | 404 (real status, no soft-404) |
+| Owner sign-in (3 factors) | 200 + HttpOnly cookie |
+| `POST /api/admin/media/upload-url` (local provider) | 200 `{strategy:"proxy", maxBytes:4194304}` |
+| Same endpoint, unsupported type | 400 with a human message |
+| Same endpoint, cross-site `Origin` + `Sec-Fetch-Site: cross-site` | 403 |
+| Multipart proxy upload (small PNG) | 200, file served from `/api/media/…` |
+| Inquiry submission (valid / invalid) | 200 with id / 422 with field errors |
+| `X-Robots-Tag` on `/admin/*` | `noindex, nofollow, noarchive` |
+
+**Still untested** (no Supabase project in this environment): the signed
+direct-to-Storage PUT, Storage CORS, and `SUPABASE_*` runtime-only behaviour.
+Those paths are exercised only on a real deployment — hence the deployment
+checklist item below.
+
+### 15.7 Extra deployment step
+
+After deploying, confirm in Supabase → Storage → `property-media` → Settings →
+CORS that the site origin is allowed for `PUT`/`GET`, otherwise large uploads
+fall back to the 4 MB proxy path (and videos will be refused with a clear
+message rather than failing silently).
