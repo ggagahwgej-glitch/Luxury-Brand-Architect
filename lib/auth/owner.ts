@@ -5,12 +5,14 @@ import { createClient } from "@supabase/supabase-js";
 import {
   isSupabaseConfigured,
   localOwnerCredentials,
+  ownerAccessCodeRequired,
   resolveDataProvider,
   supabaseAnonKey,
   supabaseUrl,
 } from "@/lib/env";
 import { getServiceClient } from "@/lib/data/supabase/client";
 import { hashIdentifier } from "@/lib/auth/rate-limit";
+import { describeDatabaseError } from "@/lib/db-errors";
 
 /**
  * Owner authentication.
@@ -69,7 +71,7 @@ export async function authenticateOwner(input: {
     const matches =
       constantTimeEquals(input.email.toLowerCase(), email.toLowerCase()) &&
       constantTimeEquals(input.password, password) &&
-      constantTimeEquals(input.code, code);
+      (!ownerAccessCodeRequired || constantTimeEquals(input.code, code));
     if (!matches) return genericFailure;
     return {
       ok: true,
@@ -95,6 +97,17 @@ export async function authenticateOwner(input: {
   });
 
   if (signInError || !signIn.user?.id) {
+    // A database/network failure is not a wrong password — say so, otherwise
+    // the owner keeps retyping a correct password and locks the account.
+    if (signInError && /fetch failed|network|timeout|ENOTFOUND|ECONNREFUSED|invalid api key|no api key/i.test(signInError.message)) {
+      console.error("[auth] sign-in could not reach Supabase:", signInError.message);
+      return {
+        ok: false,
+        reason: "config",
+        message:
+          "The authentication service could not be reached. Check the Supabase URL and keys in this deployment, then try again.",
+      };
+    }
     await recordAttempt(input.email, input.ipHash, false);
     return genericFailure; // identical message — no user enumeration
   }
@@ -112,19 +125,44 @@ export async function authenticateOwner(input: {
 
   if (profileError) {
     console.error("[auth] profile lookup failed:", profileError.message);
-    return { ok: false, reason: "config", message: "Owner profile could not be verified. Please contact support." };
+    return { ok: false, reason: "config", message: describeDatabaseError(profileError) };
   }
 
   const ownerProfile = profile as
     | { id: string; email: string | null; full_name: string | null; role: string | null; is_authorized: boolean | null }
     | null;
 
-  if (!ownerProfile || ownerProfile.role !== "owner" || ownerProfile.is_authorized !== true) {
+  if (!ownerProfile) {
     await recordAttempt(input.email, input.ipHash, false);
     return {
       ok: false,
       reason: "disabled",
-      message: "This account is not authorised for the Owner Studio.",
+      message:
+        "No owner profile exists for this account yet. Run `npm run owner:create` for this email to provision it, then sign in again.",
+    };
+  }
+
+  if (ownerProfile.role !== "owner" || ownerProfile.is_authorized !== true) {
+    await recordAttempt(input.email, input.ipHash, false);
+    return {
+      ok: false,
+      reason: "disabled",
+      message:
+        "This account is not authorised for the Owner Studio. The profiles row must have role = 'owner' and is_authorized = true.",
+    };
+  }
+
+  // Second factor switched off by the owner: email + password + the authorised
+  // profile are enough. The `owner_security` row is never read in this mode.
+  if (!ownerAccessCodeRequired) {
+    await recordAttempt(input.email, input.ipHash, true);
+    return {
+      ok: true,
+      owner: {
+        id: ownerProfile.id,
+        email: ownerProfile.email ?? input.email,
+        name: ownerProfile.full_name?.trim() || ownerProfile.email || "Owner",
+      },
     };
   }
 
@@ -136,7 +174,7 @@ export async function authenticateOwner(input: {
 
   if (securityError) {
     console.error("[auth] security lookup failed:", securityError.message);
-    return { ok: false, reason: "config", message: "Owner security record is unavailable. Please contact support." };
+    return { ok: false, reason: "config", message: describeDatabaseError(securityError) };
   }
 
   const securityRow = security as
@@ -147,7 +185,8 @@ export async function authenticateOwner(input: {
     return {
       ok: false,
       reason: "config",
-      message: "The 12-digit access code has not been configured for this owner yet.",
+      message:
+        "This deployment asks for a 12-digit code (OWNER_ACCESS_CODE=enabled) but none is configured. Run `npm run owner:create` with a code, or remove OWNER_ACCESS_CODE to sign in with email + password only.",
     };
   }
 

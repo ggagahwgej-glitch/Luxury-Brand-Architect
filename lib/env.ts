@@ -11,13 +11,76 @@ function read(name: string): string | undefined {
   return value && value.trim().length > 0 ? value.trim() : undefined;
 }
 
-export const publicSiteUrl = (read("NEXT_PUBLIC_SITE_URL") ?? "http://localhost:3000").replace(/\/$/, "");
+/**
+ * Canonical site origin.
+ *
+ * Order: explicit `NEXT_PUBLIC_SITE_URL` → Vercel's own deployment hosts →
+ * localhost. The Vercel fallbacks matter because canonical URLs, OG tags,
+ * robots.txt and the sitemap are built from this value at request time; without
+ * them a deployment that forgets the variable would advertise localhost.
+ */
+function resolvePublicSiteUrl() {
+  const explicit = read("NEXT_PUBLIC_SITE_URL");
+  if (explicit) return explicit.replace(/\/+$/, "");
 
-export const supabaseUrl = read("NEXT_PUBLIC_SUPABASE_URL");
-export const supabaseAnonKey = read("NEXT_PUBLIC_SUPABASE_ANON_KEY");
-export const supabaseServiceRoleKey = read("SUPABASE_SERVICE_ROLE_KEY");
+  const vercelHost = read("VERCEL_PROJECT_PRODUCTION_URL") ?? read("VERCEL_URL");
+  if (vercelHost) {
+    const host = vercelHost.replace(/^https?:\/\//, "").replace(/\/+$/, "");
+    return `https://${host}`;
+  }
+
+  return "http://localhost:3000";
+}
+
+export const publicSiteUrl = resolvePublicSiteUrl();
+
+/** True when the origin was configured explicitly (not derived from the host). */
+export const publicSiteUrlIsExplicit = Boolean(read("NEXT_PUBLIC_SITE_URL"));
+
+/**
+ * Supabase dashboard URLs are frequently pasted with a trailing slash (and
+ * occasionally without a scheme). Both make every request fail with an opaque
+ * "Invalid URL" error, so the value is normalised once, here.
+ */
+function normalizeSupabaseUrl(value: string | undefined) {
+  if (!value) return undefined;
+  let url = value.trim().replace(/\/+$/, "");
+  if (!url) return undefined;
+  if (!/^https?:\/\//i.test(url)) url = `https://${url}`;
+  try {
+    const parsed = new URL(url);
+    if (!parsed.hostname.includes(".")) return undefined;
+    return `${parsed.protocol}//${parsed.host}`;
+  } catch {
+    return undefined;
+  }
+}
+
+export const supabaseUrl = normalizeSupabaseUrl(read("NEXT_PUBLIC_SUPABASE_URL"));
+
+/**
+ * Current-format keys (`sb_publishable_…`) and the legacy JWT anon key are both
+ * accepted. The server also accepts the new `sb_secret_…` key in place of the
+ * legacy `service_role` JWT.
+ */
+export const supabaseAnonKey = read("NEXT_PUBLIC_SUPABASE_ANON_KEY") ?? read("SUPABASE_ANON_KEY");
+export const supabaseServiceRoleKey = read("SUPABASE_SERVICE_ROLE_KEY") ?? read("SUPABASE_SECRET_KEY");
 export const supabaseBucket = read("SUPABASE_STORAGE_BUCKET") ?? "property-media";
 export const adminSessionSecret = read("ADMIN_SESSION_SECRET");
+
+/**
+ * Second factor for the Studio.
+ *
+ * Default: **off** — the owner signs in with the owner email + password, and the
+ * `profiles` row must additionally be `role='owner'` and `is_authorized=true`.
+ * Set `OWNER_ACCESS_CODE=enabled` to add the permanent 12-digit code as a third
+ * factor; the `owner_security` row is only read in that mode.
+ *
+ * The flag is read server-side only; the browser never decides.
+ */
+export const ownerAccessCodeRequired = ["enabled", "on", "true", "1"].includes(
+  (read("OWNER_ACCESS_CODE") ?? "disabled").toLowerCase(),
+);
 
 export const isSupabaseConfigured = Boolean(supabaseUrl && supabaseAnonKey && supabaseServiceRoleKey);
 
@@ -28,6 +91,9 @@ export const isSupabaseConfigured = Boolean(supabaseUrl && supabaseAnonKey && su
  *  - the local preview provider is never allowed in a production build.
  */
 export function localProviderAllowed() {
+  // The preview provider writes to the local filesystem, which is read-only and
+  // ephemeral on Vercel — never allow it there, even if someone opts in.
+  if (read("VERCEL") === "1") return false;
   // Outside a production build the preview provider is always available.
   // Inside one it must be opted into explicitly, so a deployment that simply
   // forgot its environment variables fails loudly instead of quietly serving
@@ -84,4 +150,30 @@ export function localOwnerCredentials(): { email: string; password: string; code
   const code = read("LOCAL_OWNER_CODE");
   if (!email || !password || !code) return null;
   return { email, password, code };
+}
+
+/**
+ * Configuration diagnostics for server logs. Called from the root layout so a
+ * misconfigured deployment prints an actionable line instead of failing with an
+ * opaque 500. Never throws and never logs secret values.
+ */
+let diagnosticsLogged = false;
+export function logConfigDiagnostics() {
+  if (diagnosticsLogged || process.env.NODE_ENV !== "production") return;
+  diagnosticsLogged = true;
+
+  const warnings: string[] = [];
+  if (!supabaseUrl) warnings.push("NEXT_PUBLIC_SUPABASE_URL is missing or not a valid URL");
+  if (!supabaseAnonKey) warnings.push("NEXT_PUBLIC_SUPABASE_ANON_KEY is not set");
+  if (!supabaseServiceRoleKey) warnings.push("SUPABASE_SERVICE_ROLE_KEY is not set (the Studio cannot read or write anything)");
+  if (read("NEXT_PUBLIC_SUPABASE_URL") && !supabaseUrl) warnings.push("NEXT_PUBLIC_SUPABASE_URL could not be parsed");
+  if (!adminSessionSecret || adminSessionSecret.length < 32) warnings.push("ADMIN_SESSION_SECRET is missing or shorter than 32 characters");
+  if (!publicSiteUrlIsExplicit) warnings.push(`NEXT_PUBLIC_SITE_URL is not set (using ${publicSiteUrl})`);
+  if (read("ALLOW_LOCAL_PROVIDER") === "1") warnings.push("ALLOW_LOCAL_PROVIDER is set — remove it in production");
+  if (!ownerAccessCodeRequired)
+    warnings.push("Studio sign-in is email + password only (set OWNER_ACCESS_CODE=enabled to require the 12-digit code)");
+
+  if (warnings.length) {
+    console.error(`[config] deployment is missing recommended variables:\n  - ${warnings.join("\n  - ")}`);
+  }
 }

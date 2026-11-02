@@ -35,12 +35,20 @@ import { coverImage, galleryImages, imageAlt, priceLabel, priceSuffix, propertyV
 import { SITE } from "@/lib/config/site";
 import { jsonLdSafe, truncate } from "@/lib/utils";
 import type { Property } from "@/lib/types";
+import { UnavailableNotice } from "@/components/layout/unavailable-notice";
 
 type PageProps = { params: Promise<{ slug: string }> };
 
 export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
   const { slug } = await params;
-  const property = await getRepository().getPropertyBySlug(slug);
+  let property: Property | null = null;
+  try {
+    property = await getRepository().getPropertyBySlug(slug);
+  } catch (error) {
+    // A database outage must not turn into a 500 with no metadata.
+    console.error("[property] metadata lookup failed:", error instanceof Error ? error.message : error);
+    return { title: "Property", robots: { index: false, follow: false } };
+  }
   if (!property) {
     // Throwing here (before the response starts streaming) guarantees a real
     // 404 status for missing or unpublished listings, not merely a 404 screen.
@@ -81,7 +89,19 @@ function Fact({ icon: Icon, label, value }: { icon: typeof BedDouble; label: str
 export default async function PropertyDetailPage({ params }: PageProps) {
   const { slug } = await params;
   const repository = getRepository();
-  const property = await repository.getPropertyBySlug(slug);
+
+  let property: Property | null = null;
+  try {
+    property = await repository.getPropertyBySlug(slug);
+  } catch (error) {
+    console.error("[property] lookup failed:", error instanceof Error ? error.message : error);
+    const settings = await getSiteSettings();
+    const wa = whatsappLink(
+      settings.contact.whatsapp,
+      `Hello ${settings.branding.businessName}, I was looking at a residence on your website.`,
+    );
+    return <UnavailableNotice title="This residence could not be loaded." whatsappHref={wa} />;
+  }
   if (!property) notFound();
 
   const [related, settings] = await Promise.all([

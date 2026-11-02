@@ -13,6 +13,13 @@ import {
 } from "@/components/home/sections";
 import { jsonLdSafe } from "@/lib/utils";
 import { SITE } from "@/lib/config/site";
+import type { Paginated, Property } from "@/lib/types";
+
+// Data-driven page: render on demand so no build-time env or database access
+// is required (and the register is never frozen at deploy time).
+export const dynamic = "force-dynamic";
+
+const EMPTY_PAGE: Paginated<Property> = { items: [], total: 0, page: 1, pageSize: 3, pageCount: 1 };
 
 export async function generateMetadata(): Promise<Metadata> {
   const settings = await getSiteSettings();
@@ -33,11 +40,15 @@ export default async function HomePage() {
   const settings = await getSiteSettings();
   const repository = getRepository();
 
+  // A transient database error must degrade to the designed empty states
+  // rather than failing the whole homepage.
   const [featured, newest, locations, typeFacets] = await Promise.all([
-    repository.listFeatured(3),
-    repository.listProperties({ pageSize: 3, sort: "newest", availabilityOnly: true }),
-    repository.listLocationFacets(),
-    repository.listTypeFacets(),
+    repository.listFeatured(3).catch(() => []),
+    repository
+      .listProperties({ pageSize: 3, sort: "newest", availabilityOnly: true })
+      .catch(() => EMPTY_PAGE),
+    repository.listLocationFacets().catch(() => []),
+    repository.listTypeFacets().catch(() => []),
   ]);
 
   const signature = featured.length >= 3 ? featured.slice(0, 3) : newest.items.slice(0, 3);

@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { getRepository, getSiteSettings } from "@/lib/data";
+import { emptyPage, safeData } from "@/lib/data/resilient";
 import { PageHero } from "@/components/layout/page-hero";
 import { PropertyExplorer } from "@/components/property/property-explorer";
 import { parseListingParams, toPropertyQuery, type RawSearchParams } from "@/lib/search-params";
@@ -42,8 +43,8 @@ export default async function PropertiesPage({ searchParams }: PageProps) {
   const repository = getRepository();
 
   const [result, locations] = await Promise.all([
-    repository.listProperties(toPropertyQuery(filters)),
-    repository.listLocationFacets(),
+    safeData("property register", repository.listProperties(toPropertyQuery(filters)), emptyPage(9)),
+    safeData("locations", repository.listLocationFacets(), []),
   ]);
 
 

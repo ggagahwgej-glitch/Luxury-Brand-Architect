@@ -202,6 +202,12 @@ export const FEATURE_SUGGESTIONS = [
 
 export const MAX_IMAGE_BYTES = 8 * 1024 * 1024; // 8 MB
 export const MAX_VIDEO_BYTES = 64 * 1024 * 1024; // 64 MB
+/**
+ * Largest file that may be streamed through the app's own upload route.
+ * Vercel caps serverless request bodies at ~4.5 MB, so anything larger must go
+ * straight from the browser to Supabase Storage via a signed upload URL.
+ */
+export const MAX_PROXY_UPLOAD_BYTES = 4 * 1024 * 1024; // 4 MB
 export const MAX_IMAGES_PER_PROPERTY = 20;
 
 export const PUBLIC_NAV = [

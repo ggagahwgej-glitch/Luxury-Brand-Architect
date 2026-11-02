@@ -311,7 +311,8 @@ export class LocalRepository implements Repository {
       const copy = clone(source);
       copy.id = uuid();
       copy.title = `${source.title} (Copy)`;
-      copy.slug = uniqueSlug(db, source.slug);
+      // Same convention as the Supabase provider: "-copy", then "-copy-2", …
+      copy.slug = uniqueSlug(db, `${source.slug}-copy`);
       copy.isPublished = false;
       copy.isFeatured = false;
       copy.createdAt = new Date().toISOString();

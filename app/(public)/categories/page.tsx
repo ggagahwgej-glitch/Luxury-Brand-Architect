@@ -3,6 +3,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { ArrowUpRight } from "lucide-react";
 import { getRepository, getSiteSettings } from "@/lib/data";
+import { safeData } from "@/lib/data/resilient";
 import { PageHero } from "@/components/layout/page-hero";
 import { Reveal } from "@/components/ui/reveal";
 import { COLLECTIONS } from "@/lib/constants";
@@ -28,7 +29,7 @@ export async function generateMetadata(): Promise<Metadata> {
 
 export default async function CategoriesPage() {
   const repository = getRepository();
-  const facets = await repository.listTypeFacets();
+  const facets = await safeData("category counts", repository.listTypeFacets(), []);
   const counts = new Map(facets.map((facet) => [facet.propertyType, facet.count]));
 
   return (

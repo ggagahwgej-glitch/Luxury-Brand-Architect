@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { Clock, Mail, MapPin, MessageCircle, Phone } from "lucide-react";
 import { getRepository, getSiteSettings } from "@/lib/data";
+import { emptyPage, safeData } from "@/lib/data/resilient";
 import { PageHero } from "@/components/layout/page-hero";
 import { InquiryForm } from "@/components/forms/inquiry-form";
 import { Reveal } from "@/components/ui/reveal";
@@ -28,7 +29,11 @@ export async function generateMetadata(): Promise<Metadata> {
 export default async function ContactPage() {
   const [settings, properties] = await Promise.all([
     getSiteSettings(),
-    getRepository().listProperties({ pageSize: 40, availabilityOnly: true, sort: "newest" }),
+    safeData(
+      "contact property list",
+      getRepository().listProperties({ pageSize: 40, availabilityOnly: true, sort: "newest" }),
+      emptyPage(40),
+    ),
   ]);
 
   const wa = whatsappLink(settings.contact.whatsapp, `Hello ${settings.branding.businessName}, I would like to discuss a property requirement.`);

@@ -17,10 +17,10 @@ Single Next.js 15 application containing the public luxury real-estate website *
 | Styling | Tailwind CSS 3.4 with a custom token layer in `app/globals.css` |
 | Data | `@supabase/supabase-js` (production) / file-backed local provider (development preview only) |
 | Validation | Zod 4 on every public and admin write path |
-| Auth | Supabase Auth (email + password) → owner authorization → bcrypt-hashed 12-digit secret code → signed session cookie |
+| Auth | Supabase Auth (email + password) → owner authorization → optional bcrypt-hashed 12-digit code (`OWNER_ACCESS_CODE`) → signed session cookie |
 | Fonts | `@fontsource` (self-hosted): Cormorant Garamond + Playfair Display (display), Inter Variable (body) |
 | Icons | lucide-react + hand-built brand social icons |
-| Tests | Vitest (37 assertions across 5 suites) |
+| Tests | Vitest (47 assertions across 6 suites) + 36 SQL/RLS checks |
 | CLI | `tsx` scripts for owner-code hashing, storage pruning, backend verification |
 
 ### Directory map
@@ -132,7 +132,7 @@ Asserts env shape, that all six content tables + `login_attempts` exist, that th
 
 ---
 
-## 4. Owner authentication (three factors, server-side)
+## 4. Owner authentication (server-side; two or three factors)
 
 `POST /api/admin/login` performs, in order:
 
@@ -140,7 +140,7 @@ Asserts env shape, that all six content tables + `login_attempts` exist, that th
 2. **Rate limit** — 5 attempts / 15 min per hashed IP, then `429` with `Retry-After` and `retryAfterSeconds`.
 3. **Factor 1** — email + password verified with Supabase Auth (`signInWithPassword`); the local provider compares against dev credentials.
 4. **Factor 2** — owner authorization: `profiles.role = 'owner'` **and** `is_authorized = true`.
-5. **Factor 3** — 12-digit code compared with bcrypt against `owner_security.secret_code_hash`; 5 wrong codes lock the factor for 15 minutes. A successful login clears both counters.
+5. **Factor 3 (optional)** — 12-digit code compared with bcrypt against `owner_security.secret_code_hash`; 5 wrong codes lock the factor for 15 minutes. A successful login clears both counters. This step is skipped entirely when the deployment sets `OWNER_ACCESS_CODE=disabled` (§18); the `owner_security` row is then never read.
 6. Issues the session cookie and writes a login attempt record (identifier + IP stored as HMAC hashes only).
 
 Cookie: `aurum_admin_session`, HMAC-SHA256 signed payload (sub, role, iat, exp), 8-hour TTL, `HttpOnly`, `SameSite=Lax`, `Path=/`, `Secure` whenever `NEXT_PUBLIC_SITE_URL` is HTTPS.
@@ -234,7 +234,8 @@ Changing the hero heading, the accent preset (`imperial_gold` → `champagne`) a
 ### Automated
 
 ```
-npx vitest run        → 37 passing (5 files)
+npx vitest run        → 47 passing (6 files)
+npm run verify:sql    → 36 schema/RLS checks passing
 npx tsc --noEmit      → clean (excluding generated .next/types)
 npm run build         → compiled successfully, 19 routes
 npm run seed:check    → passes in local mode
@@ -333,10 +334,362 @@ Verification after the fixes: `tsc` clean, `vitest run` 37 passing, production b
 
 ---
 
-## 13. Deployment checklist
+## 13. Rendering mode & build-time configuration
+
+Public routes are intentionally **request-rendered**, not prerendered:
+
+```ts
+// app/(public)/layout.tsx, app/(public)/page.tsx, app/robots.ts, app/sitemap.ts
+export const dynamic = "force-dynamic";
+```
+
+Why: every public page reads `site_settings`, and most also read listings, so a
+static build would (a) need runtime env plus a reachable database at build time,
+and (b) freeze content at deploy time — Studio edits would only appear after a
+redeploy.
+
+This was the direct cause of a Vercel build failure (`Error: No data provider is
+configured…` while pre-rendering `/`): the page used to be a static candidate,
+so the build executed `getRepository()` → `resolveDataProvider()` without any
+runtime env present. With the segment marked dynamic, `/`, `/legal/*`,
+`/properties*`, `/buy`, `/rent`, `/categories`, `/about`, `/contact`,
+`/settings` and `robots.txt` are all `ƒ` and the build performs no data access.
+
+Verified both ways:
+
+| Build | Result |
+| --- | --- |
+| `ALLOW_LOCAL_PROVIDER=1 npm run build` with `.env.local` + local provider | succeeds, 19 routes |
+| `npm run build` with **`.env.local` removed and every provider variable unset** | succeeds — no prerender of data-driven pages, no provider error |
+
+Only three routes remain static and none of them touch the database:
+`/_not-found`, `/admin` (a redirect stub) and `/icon.svg`.
+
+Guarding against transient failures: the homepage's data reads are wrapped in
+`.catch()` fallbacks (`EMPTY_PAGE`, `[]`), `getSiteSettings()` falls back to
+`DEFAULT_SITE_SETTINGS`, and `sitemap.ts` catches and still returns its static
+entries — so a database hiccup degrades to designed empty states instead of a
+500.
+
+Environment variables therefore only need to exist at **runtime**. In Vercel:
+set them for the Production environment (and Preview if used), then redeploy;
+`NEXT_PUBLIC_SITE_URL` must be the final HTTPS origin (no trailing slash) and
+`ADMIN_SESSION_SECRET` 32+ random characters. `ALLOW_LOCAL_PROVIDER` must not be
+set.
+
+Trade-off: HTML is now served `no-store` (CDN still caches images/assets). To
+get cached HTML later, swap `force-dynamic` for `export const revalidate = 60`;
+`revalidatePath` calls already exist in every mutation route.
+
+## 14. Deployment checklist
 
 1. `DATA_PROVIDER=supabase`, `NEXT_PUBLIC_SITE_URL=https://client-domain.com`, Supabase URL/anon/service-role keys, `ADMIN_SESSION_SECRET` (`openssl rand -base64 48`), `SUPABASE_STORAGE_BUCKET=property-media`. Do **not** set `ALLOW_LOCAL_PROVIDER` in production.
 2. Apply migrations 0001→0003 + `seed.sql`; create the owner Auth user; insert the `profiles` row as owner/authorized; run `npm run owner:hash` and apply the printed SQL.
 3. `npm ci && npm run build && npm run start` (or deploy to Vercel with the same variables). `next start` binds `0.0.0.0:3000`; on Vercel no port config is needed.
 4. Post-deploy: `npm run seed:check` against production env, log in at `/admin/login`, upload one property with images, publish it, submit a test inquiry, confirm it appears `new` in the studio, then delete the test records.
 5. Confirm HTTPS (cookie `Secure` turns on automatically), and that `/admin` is `noindex` in the deployed HTML.
+
+## 15. Pre-deployment audit (Vercel)
+
+A full pass over environment fallbacks, client/server boundaries, API route
+configuration, middleware, and App Router segments — done before the first real
+deployment so the deploy throws nothing unexpected.
+
+### 15.1 Environment fallbacks
+
+| Item | Before | Now |
+| --- | --- | --- |
+| Site origin | `NEXT_PUBLIC_SITE_URL` or `http://localhost:3000` | explicit → `VERCEL_PROJECT_PRODUCTION_URL` → `VERCEL_URL` → localhost. Canonical/OG/sitemap/robots no longer advertise localhost on a deployment that forgot the variable. |
+| Local provider on Vercel | allowed if `ALLOW_LOCAL_PROVIDER=1` | hard-blocked when `VERCEL=1` (the FS is read-only and ephemeral). |
+| Diagnostics | silent | `logConfigDiagnostics()` runs once per server process from the root layout and logs which recommended variables are missing (never prints values). |
+| Studio with no config | generic 500 on sign-in | `/api/admin/login` pre-checks provider + secret and returns **503** with the exact variables to add. |
+
+### 15.2 Client/server boundaries
+
+- No client component imports `lib/env`, `lib/data`, `lib/auth` or `lib/storage`
+  (grep-verified). Client code only touches `lib/config/site`, `lib/constants`
+  and the new `lib/upload-client` ("use client", no server imports).
+- `lib/storage` keeps `import "server-only"` so a future client import fails at
+  build time instead of leaking the service-role client.
+- `serverExternalPackages: ["bcryptjs"]` retained (native binding must not be
+  bundled).
+
+### 15.3 Uploads: Vercel body limit (real bug found)
+
+Supabase/`local` uploads were both streamed through
+`POST /api/admin/media/upload`, but Vercel caps function request bodies at
+≈4.5 MB while the app allowed 8 MB images and 64 MB videos — every large photo
+or any video would have failed in production.
+
+- New `POST /api/admin/media/upload-url` (auth + same-origin + rate limit +
+  Zod) returns a **signed Supabase upload URL** (`strategy: "direct"`) so the
+  browser PUTs the file straight to Storage with XHR progress. Files never pass
+  through a function.
+- The proxy route stays as the fallback (local preview provider, or a failed
+  signed PUT for small files) and now rejects oversized bodies with a clear
+  **413** (`MAX_PROXY_UPLOAD_BYTES` = 4 MB).
+- `lib/upload-client.ts` implements the strategy switch for both the property
+  form (images/video) and the settings form (brand assets), preserving progress
+  and surfacing validation/auth/rate-limit errors verbatim.
+- Requires the storage bucket CORS policy to allow the site origin — see
+  README ("Deployment notes").
+- Dead `experimental.serverActions.bodySizeLimit` removed; the project does not
+  use Server Actions.
+
+### 15.4 Images, headers, middleware
+
+- `images.remotePatterns` adds `**.supabase.co/storage/v1/object/public/**` so
+  `next/image` works even when `NEXT_PUBLIC_SUPABASE_URL` is only present at
+  runtime (the previous list was computed at build time and would have made
+  every uploaded photo throw).
+- `images.minimumCacheTTL` = 30 days (upload names are immutable).
+- Headers: HSTS (2 years, `includeSubDomains`), `X-DNS-Prefetch-Control: on`
+  added to the existing `nosniff` / `SAMEORIGIN` / referrer / permissions set.
+- Middleware: cross-site state-changing `/api/admin/*` calls are rejected (403)
+  from `Origin` + `Sec-Fetch-Site` before routing; every Studio response carries
+  `X-Robots-Tag: noindex, nofollow, noarchive`.
+
+### 15.5 App Router segments
+
+- Added `app/(public)/error.tsx`, `app/admin/error.tsx` and
+  `app/admin/(studio)/error.tsx`. Previously a failed fetch on a public page, the
+  sign-in screen or inside the Studio surfaced as the global error screen; now
+  each keeps its own chrome (site header/footer, or the Studio sidebar) and
+  offers retry.
+- **Soft-404 caught during this audit:** adding `loading.tsx` above a page that
+  calls `notFound()` makes Next stream the shell first, so an unknown property
+  URL answered **200** with the 404 design instead of a real 404. Those loading
+  states were therefore limited to segments that never 404 — the listing
+  (`/properties`) and the dashboard, which already had them. Unknown slugs and
+  unknown Studio property ids now return a true 404.
+- All 13 API routes are `runtime = "nodejs"` + `dynamic = "force-dynamic"`;
+  only `/_not-found`, `/admin` and `/icon.svg` are static.
+- Every referenced local asset exists (`public/seed/*`, `app/icon.svg`) — checked
+  against the code and the seeded media rows.
+
+### 15.6 Verified after the changes
+
+| Check | Result |
+| --- | --- |
+| `npx tsc --noEmit` | clean |
+| `npx vitest run` | 47/47 (6 files) |
+| `npm run build` with `.env.local` removed and provider vars unset | exit 0 |
+| `ALLOW_LOCAL_PROVIDER=1 npm run build` + `next start` | exit 0, 15 routes served |
+| Public smoke (`/`, `/properties`, `/properties/[slug]`, `/buy`, `/rent`, `/categories`, `/about`, `/contact`, `/settings`, `/admin/login`, `/robots.txt`, `/sitemap.xml`) | all 200 |
+| Unauthenticated `/admin/dashboard` | 307 → `/admin/login?next=…` |
+| Unknown property slug / unknown Studio property id | 404 (real status, no soft-404) |
+| Owner sign-in (3 factors, and 2-factor mode separately) | 200 + HttpOnly cookie |
+| `POST /api/admin/media/upload-url` (local provider) | 200 `{strategy:"proxy", maxBytes:4194304}` |
+| Same endpoint, unsupported type | 400 with a human message |
+| Same endpoint, cross-site `Origin` + `Sec-Fetch-Site: cross-site` | 403 |
+| Multipart proxy upload (small PNG) | 200, file served from `/api/media/…` |
+| Inquiry submission (valid / invalid) | 200 with id / 422 with field errors |
+| `X-Robots-Tag` on `/admin/*` | `noindex, nofollow, noarchive` |
+
+**Still untested** (no Supabase project in this environment): the signed
+direct-to-Storage PUT, Storage CORS, and `SUPABASE_*` runtime-only behaviour.
+Those paths are exercised only on a real deployment — hence the deployment
+checklist item below.
+
+### 15.7 Extra deployment step
+
+After deploying, confirm in Supabase → Storage → `property-media` → Settings →
+CORS that the site origin is allowed for `PUT`/`GET`, otherwise large uploads
+fall back to the 4 MB proxy path (and videos will be refused with a clear
+message rather than failing silently).
+
+## 16. Connecting the client's Supabase project (round 4)
+
+The client supplied a project: `https://aybxmtqozjkakhdefyqq.supabase.co` with
+its **publishable** key. The secret key is intentionally not in the repository;
+it is required before the Studio or the enquiry endpoint can write anything.
+
+> **Environment note:** this build sandbox has no outbound access to
+> `*.supabase.co`, so the live project could not be probed from here. Everything
+> that *can* be verified without the network was verified, and the checks that
+> need the project are packaged as `npm run seed:check` (see §16.4) for the
+> operator to run once, from a machine that can reach Supabase.
+
+### 16.1 The schema was executed for real (not just reviewed)
+
+`npm run verify:sql` (`scripts/verify-sql.mjs`) now boots Postgres 18 in-process
+(PGlite, a WASM build of real Postgres), stubs only the Supabase-owned pieces
+(`auth.users`, `auth.uid()`, `storage.buckets`, `storage.objects`, the
+`anon`/`authenticated`/`service_role` roles) and applies the migrations exactly
+as written, followed by `seed.sql`. **36/36 checks pass**, including:
+
+| Area | Verified |
+| --- | --- |
+| Migrations | 0001, 0002, 0003 and `seed.sql` apply without error |
+| Structure | all 7 tables, RLS enabled on every table, bucket created public with the MIME allow-list |
+| Constraints | invalid status, price ≤ 0, malformed slug and duplicate slug are all rejected |
+| Generated column | `area_display` = `built_up_area` (used by area filters and sorting) |
+| Trigger | `updated_at` is bumped on update |
+| Cover rule | a second cover image is rejected by the partial unique index |
+| RLS (anon) | published rows visible, drafts invisible, `inquiries` unreadable *and* unwritable, settings readable |
+| RLS (auth) | an unauthorised account reads nothing; the authorised owner reads drafts; `is_owner()` only true for them |
+| Provisioning | the SQL printed by `npm run owner:hash` creates the profile **and** the hash |
+
+This is the first time the SQL had actually been executed — it was previously
+reviewed by eye only.
+
+### 16.2 Bugs found and fixed in this round
+
+| # | Bug | Effect | Fix |
+| --- | --- | --- | --- |
+| 1 | `npm run owner:hash` printed SQL that only `update`d `profiles` | On a fresh project the owner row does not exist yet → update touches 0 rows → login answers "not authorised" forever | The SQL now upserts `profiles` (owner + authorised) and then writes the `owner_security` hash; verified in Postgres |
+| 2 | `npm run lint` ran `next lint` with no ESLint config | Interactive prompt hangs/fails in CI | Removed the broken script; the gates are `typecheck`, `test`, `verify:sql`, `build` |
+| 3 | `sharp` was a devDependency | `next/image` production optimisation can fail on hosts that prune dev dependencies | Moved to `dependencies` |
+| 4 | Preview provider duplicated a listing as `slug-2-2`, Supabase provider as `slug-copy` | Inconsistent, ugly URLs between environments | Both now produce `-copy`, then `-copy-2` |
+| 5 | Public slug read relied on RLS alone | A future policy mistake would expose a draft | `getPropertyBySlug` now also filters `is_published = true` unless the Studio asks otherwise |
+| 6 | `listInquiries` reused a postgrest-js builder (builders mutate in place) | The page-clamp path appended `order` twice | Each run builds its own query |
+| 7 | Supabase URL was used verbatim | A trailing slash or missing scheme (common paste error) broke every request with "Invalid URL" | Normalised once in `lib/env.ts` (scheme added, trailing slash trimmed, parsed); diagnostics name the value when it is invalid |
+| 8 | Only the legacy key names were read | New-format keys (`sb_secret_…`) or variant names would be treated as missing | `SUPABASE_SERVICE_ROLE_KEY`/`SUPABASE_SECRET_KEY` and `NEXT_PUBLIC_SUPABASE_ANON_KEY`/`SUPABASE_ANON_KEY` are both accepted; `.env.example` documents the new formats |
+| 9 | A network/config failure during sign-in was reported as "wrong credentials" | The owner retries a *correct* password and locks the account for 15 minutes | Transport/auth-service failures now return a configuration message, not an invalid-credentials one |
+| 10 | `seed:check` printed "✓" for RLS checks when the project was unreachable, after ~90 s of retries | False confidence + noise | Preflight reachability probe (10 s) and "real denial vs transport error" detection |
+
+### 16.3 New tests
+
+`tests/supabase-repository.test.ts` (10 tests) records the PostgREST query the
+Supabase provider builds — the part the JSON preview provider never exercises:
+default filters, published-only slug reads, area sorting on `area_display`,
+search-term escaping (commas/parentheses/quotes/percent), out-of-range page
+clamping, malformed-UUID short-circuit and numeric bounds.
+
+### 16.4 What the operator still has to do (in order)
+
+1. Add the **secret key** to `.env.local` (`SUPABASE_SERVICE_ROLE_KEY`) and to
+   Vercel.
+2. Run the four SQL files (0001 → 0002 → 0003 → seed) in the Supabase SQL editor.
+3. Authentication: keep Email on, **disable public sign-ups**, create the owner
+   user with *Auto Confirm*.
+4. `npm run owner:hash -- <12-digit-code> <owner-email>` and run the printed SQL.
+5. Storage → `property-media` → CORS: allow the site origin (`GET`/`PUT`/`POST`).
+6. `npm run seed:check` until it prints **All checks passed**.
+7. Deploy with the same variables, then sign in at `/admin/login` and create the
+   first listing (the site is intentionally empty until then).
+
+### 16.5 Verified in this round
+
+| Check | Result |
+| --- | --- |
+| `npx tsc --noEmit` | clean |
+| `npx vitest run` | 47/47 (6 files) |
+| `npm run verify:sql` | 36/36 |
+| `npm run build` (no env) and `ALLOW_LOCAL_PROVIDER=1 npm run build` | both exit 0 |
+| Empty database (0 properties, 0 enquiries) | every public page renders designed empty states, no 500 |
+| Admin CRUD | create → duplicate (`-copy`) → publish/unpublish (public 404/200) → delete (404) |
+| Settings round-trip | save hero heading → visible on `/` → restored |
+| Enquiry round-trip | create → status `contacted` → delete |
+| Session | logout → `/admin/dashboard` 307 → `/admin/login` |
+| Upload pipeline | plan endpoint (proxy strategy locally), validation 400, cross-origin 403, multipart upload 200 |
+
+**Still untested** (needs the live project): signed direct-to-Storage uploads,
+Storage CORS, `sb_secret_…` key acceptance, and auth against the real project.
+
+## 17. Going live without visible errors (round 5)
+
+The client supplied the full key set (publishable + secret + both legacy JWTs)
+for `https://aybxmtqozjkakhdefyqq.supabase.co`. They are configured in
+`.env.local` only (git-ignored); nothing secret is in the repository. This build
+sandbox still has no outbound access to `*.supabase.co`, so the live project
+cannot be driven from here — instead the go-live path was made one-paste short
+and every failure mode was exercised by pointing the app at an unreachable
+database.
+
+### 17.1 A database outage no longer produces a 500
+
+Measured before: with the provider configured but the database unreachable,
+`/buy`, `/rent`, `/categories`, `/contact` and `/properties/[slug]` all returned
+**500** (the generic error boundary). That is exactly what a paused Supabase
+project (free tier pauses after inactivity) or a half-finished setup looks like
+to a visitor.
+
+Now those pages use `safeData()` (`lib/data/resilient.ts`): the failure is logged
+as `[data] … unavailable: …` on the server, and the page renders its designed
+empty state. The property detail page renders a branded
+`UnavailableNotice` (with a WhatsApp shortcut) instead of the error screen, and
+its `generateMetadata` no longer throws. Re-measured with the same unreachable
+database: **every public route returns 200** — `/`, `/properties`, `/buy`,
+`/rent`, `/categories`, `/about`, `/contact`, `/settings`, `/admin/login`,
+`/robots.txt`, `/sitemap.xml`, `/properties/<anything>`.
+
+Studio pages deliberately keep their error boundary: an owner must see a real
+error when a write or a private read fails, not a silent empty table.
+
+The sign-in screen now answers **503** with "The authentication service could not
+be reached. Check the Supabase URL and keys…" instead of pretending the password
+was wrong (which previously led owners to lock themselves out).
+
+### 17.2 One-paste setup, one-command owner
+
+| Artefact | Purpose |
+| --- | --- |
+| `supabase/apply-all.sql` | migrations 0001→0003 + seed concatenated by `npm run sql:bundle`; pasted once into the SQL editor |
+| `npm run owner:create -- <email> <password> <code>` | creates the Auth user **email-confirmed**, upserts `profiles` (owner/authorised), stores the bcrypt code hash, then reads all three back to verify |
+| `npm run verify:sql` | now also applies `apply-all.sql` to a fresh in-process database, so the bundle cannot drift from the migrations (**37 checks**) |
+| `docs/SUPABASE_SETUP.md` | the seven steps, plus a troubleshooting table mapping each error message to its fix |
+
+### 17.3 Verified in this round
+
+| Check | Result |
+| --- | --- |
+| `npx tsc --noEmit` | clean |
+| `npx vitest run` | 47/47 |
+| `npm run verify:sql` | 37/37 (including the bundle) |
+| Local provider build + `next start` | all public routes 200, Studio 307 → login |
+| **Supabase mode with an unreachable database** | all 12 public routes 200, detail page shows the branded notice, login answers 503 with the configuration message |
+| `npm run owner:create` argument validation / offline error path | clear messages, non-zero exit |
+| Bundle → database | `apply-all.sql` creates 7 tables and 15 policies on a clean database |
+
+**Still needs the live project** (outbound access is blocked here): signed
+direct-to-Storage uploads, Storage CORS, real Supabase Auth sign-in and
+`sb_secret_…` acceptance — all covered by `npm run seed:check`, which prints the
+fix for every ✗.
+
+## 18. Second factor made optional (owner request)
+
+The owner asked to sign in with **email + password only**, without the permanent
+12-digit code. Rather than deleting the factor, it is now controlled by one
+server-side flag:
+
+```env
+OWNER_ACCESS_CODE=disabled   # email + password only
+OWNER_ACCESS_CODE=enabled    # default: email + password + the 12-digit code
+```
+
+What changes when it is disabled:
+
+- The login screen renders without the code field and posts without a `code`.
+- `POST /api/admin/login` does not require, validate or compare a code.
+- `authenticateOwner()` returns after the owner-authorisation check and never
+  reads `owner_security` (no lookup, no bcrypt compare, no lockout counters).
+- `npm run owner:create` accepts a third argument or omits it; without a code it
+  stores no `owner_security` row.
+- A one-line warning is logged once per process:
+  `[config] … OWNER_ACCESS_CODE is disabled — Studio sign-in is email + password only`.
+
+What does **not** change: the `profiles` authorisation gate (`role='owner'` and
+`is_authorized=true`), the rate limit (5 attempts / 15 minutes per IP), attempt
+auditing in `login_attempts`, the signed HttpOnly cookie with an 8-hour TTL, and
+every API/route authorisation check. The database schema is untouched, so the
+code can be re-enabled by changing the variable and redeploying.
+
+Security note recorded in the README: with the second factor off, the password
+is the only secret, so it must be long and unique, Supabase's leaked-password
+protection should stay on, and public sign-ups must stay disabled.
+
+### 18.1 Verified
+
+| Check | Result |
+| --- | --- |
+| `OWNER_ACCESS_CODE=disabled` + email/password | **200**, signed cookie issued |
+| same mode, wrong password | **401**, generic message |
+| same mode, arbitrary `code` sent | ignored, **200** |
+| login page markup in that mode | no code field, replacement hint rendered |
+| `OWNER_ACCESS_CODE=enabled`, no code | **422** with `fieldErrors.code` |
+| same mode, wrong 12-digit code | **401** |
+| same mode, correct code | **200** |
+| `npm run owner:create` without a code (disabled) | proceeds (network-blocked here, argument path verified) |
+| `npm run owner:create` without a code (enabled) | refused with the exact command to run |
+| `tsc`, `vitest` (47/47) | clean |

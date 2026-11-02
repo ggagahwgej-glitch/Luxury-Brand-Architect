@@ -14,12 +14,21 @@ const nextConfig: NextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
   serverExternalPackages: ["bcryptjs"],
-  experimental: {
-    serverActions: { bodySizeLimit: "12mb" },
-  },
   images: {
     formats: ["image/avif", "image/webp"],
+    // Long-lived immutable storage objects (uploads include a UUID in the name).
+    minimumCacheTTL: 60 * 60 * 24 * 30,
     remotePatterns: [
+      // Supabase Storage is served from the project host. The wildcard keeps
+      // image optimisation working when NEXT_PUBLIC_SUPABASE_URL is only
+      // available at runtime (Vercel "build" scope not set), which would
+      // otherwise leave the host out of this build-time list and make
+      // next/image throw for every uploaded photo.
+      {
+        protocol: "https" as const,
+        hostname: "**.supabase.co",
+        pathname: "/storage/v1/object/public/**",
+      },
       ...(supabaseHost
         ? [
             {
@@ -29,7 +38,6 @@ const nextConfig: NextConfig = {
             },
           ]
         : []),
-      { protocol: "https" as const, hostname: "images.unsplash.com" },
     ],
   },
   async headers() {
@@ -41,6 +49,9 @@ const nextConfig: NextConfig = {
           { key: "X-Frame-Options", value: "SAMEORIGIN" },
           { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
           { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=()" },
+          // Only honoured over HTTPS; ignored on http://localhost.
+          { key: "Strict-Transport-Security", value: "max-age=63072000; includeSubDomains" },
+          { key: "X-DNS-Prefetch-Control", value: "on" },
         ],
       },
       {

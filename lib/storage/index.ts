@@ -47,7 +47,13 @@ function safeBaseName(name: string) {
   return base || "asset";
 }
 
-export function validateUpload(file: File, kind: UploadKind) {
+export interface UploadTarget {
+  name: string;
+  type: string;
+  size: number;
+}
+
+export function validateUpload(file: { type: string; size: number }, kind: UploadKind) {
   const isImage = (ALLOWED_IMAGE_TYPES as readonly string[]).includes(file.type);
   const isVideo = (ALLOWED_VIDEO_TYPES as readonly string[]).includes(file.type);
 
@@ -75,16 +81,74 @@ export function validateUpload(file: File, kind: UploadKind) {
   throw new UploadError("Unsupported file type.");
 }
 
+function buildObjectName(target: UploadTarget, kind: UploadKind) {
+  const mediaType = validateUpload(target, kind);
+  const extension = EXTENSIONS[target.type] ?? (mediaType === "image" ? "jpg" : "mp4");
+  const fileName = `${Date.now()}-${safeBaseName(target.name)}-${randomUUID().slice(0, 8)}.${extension}`;
+  const folder = kind === "brand" ? "brand" : "properties";
+  return {
+    mediaType,
+    fileName,
+    storagePath: `${folder}/${new Date().getUTCFullYear()}/${fileName}`,
+  };
+}
+
+export interface SignedUpload {
+  strategy: "direct";
+  /** URL the browser PUTs the file to. */
+  signedUrl: string;
+  token: string;
+  /** Path inside the bucket — stored on the media row for later deletion. */
+  storagePath: string;
+  /** Public URL to save once the upload completes. */
+  publicUrl: string;
+  mediaType: "image" | "video";
+  contentType: string;
+}
+
+/**
+ * Creates a Supabase signed upload URL so the browser can send large files
+ * (videos, high-resolution photography) directly to Storage. Streaming them
+ * through a Vercel function would hit the platform's ~4.5 MB body limit.
+ *
+ * Returns null for the local preview provider, whose uploads go through the
+ * app's own route instead.
+ */
+export async function createSignedUpload(target: UploadTarget, kind: UploadKind = "image"): Promise<SignedUpload | null> {
+  const { mediaType, storagePath } = buildObjectName(target, kind);
+  if (resolveDataProvider() === "local") return null;
+
+  const admin = getServiceClient();
+  const { data, error } = await admin.storage.from(supabaseBucket).createSignedUploadUrl(storagePath, {
+    upsert: false,
+  });
+  if (error || !data?.signedUrl) {
+    throw new UploadError(`Could not prepare the upload: ${error?.message ?? "no signed URL returned"}`);
+  }
+
+  const { data: urlData } = admin.storage.from(supabaseBucket).getPublicUrl(data.path ?? storagePath);
+  if (!urlData?.publicUrl) {
+    throw new UploadError("Upload URL created but no public URL was returned. Check the bucket's public access setting.");
+  }
+
+  return {
+    strategy: "direct",
+    signedUrl: data.signedUrl,
+    token: data.token,
+    storagePath: data.path ?? storagePath,
+    publicUrl: urlData.publicUrl,
+    mediaType,
+    contentType: target.type,
+  };
+}
+
 /**
  * Persists an uploaded file either to Supabase Storage (production) or to the
  * local preview uploads folder (development). Returns the public URL plus the
  * storage path so records can be cleaned up later.
  */
 export async function storeUpload(file: File, kind: UploadKind = "image"): Promise<StoredObject> {
-  const mediaType = validateUpload(file, kind);
-  const extension = EXTENSIONS[file.type] ?? (mediaType === "image" ? "jpg" : "mp4");
-  const fileName = `${Date.now()}-${safeBaseName(file.name)}-${randomUUID().slice(0, 8)}.${extension}`;
-  const folder = kind === "brand" ? "brand" : "properties";
+  const { mediaType, fileName, storagePath } = buildObjectName(file, kind);
   const buffer = Buffer.from(await file.arrayBuffer());
 
   if (resolveDataProvider() === "local") {
@@ -99,7 +163,6 @@ export async function storeUpload(file: File, kind: UploadKind = "image"): Promi
     };
   }
 
-  const storagePath = `${folder}/${new Date().getUTCFullYear()}/${fileName}`;
   const admin = getServiceClient();
   const { error } = await admin.storage.from(supabaseBucket).upload(storagePath, buffer, {
     contentType: file.type,

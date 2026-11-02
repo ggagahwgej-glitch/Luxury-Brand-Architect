@@ -3,7 +3,7 @@ import { loginSchema } from "@/lib/validation/auth";
 import { authenticateOwner } from "@/lib/auth/owner";
 import { createSessionToken } from "@/lib/auth/token";
 import { sessionCookieOptions, ADMIN_COOKIE } from "@/lib/auth/session";
-import { assertAdminSecret } from "@/lib/env";
+import { assertAdminSecret, ownerAccessCodeRequired, resolveDataProvider } from "@/lib/env";
 import { checkRateLimit, hashIdentifier, LOGIN_RATE_LIMIT, resetRateLimit } from "@/lib/auth/rate-limit";
 import { clientIp } from "@/lib/auth/admin";
 import { isSameOrigin, jsonError, readJson } from "@/lib/api";
@@ -40,12 +40,32 @@ export async function POST(request: Request) {
     return jsonError("Please correct the highlighted fields.", 422, { fieldErrors });
   }
 
+  // A deployment that has not been given its environment variables should say
+  // so plainly instead of failing with a generic error on every attempt.
+  try {
+    resolveDataProvider();
+    assertAdminSecret();
+  } catch (error) {
+    console.error("[login] deployment is not configured:", error);
+    return jsonError(
+      "The Owner Studio is not configured on this deployment yet. Add the Supabase and ADMIN_SESSION_SECRET environment variables, then redeploy.",
+      503,
+    );
+  }
+
+  const code = parsed.data.code?.trim() ?? "";
+  if (ownerAccessCodeRequired && code.length !== 12) {
+    return jsonError("Please correct the highlighted fields.", 422, {
+      fieldErrors: { code: "Enter your 12-digit access code" },
+    });
+  }
+
   let result;
   try {
     result = await authenticateOwner({
       email: parsed.data.email,
       password: parsed.data.password,
-      code: parsed.data.code,
+      code,
       ipHash,
     });
   } catch (error) {
@@ -54,7 +74,7 @@ export async function POST(request: Request) {
   }
 
   if (!result.ok) {
-    const status = result.reason === "locked" ? 429 : result.reason === "config" ? 500 : 401;
+    const status = result.reason === "locked" ? 429 : result.reason === "config" ? 503 : 401;
     return NextResponse.json(
       { ok: false, error: result.message, retryAfterSeconds: result.retryAfterSeconds },
       { status, headers: result.retryAfterSeconds ? { "Retry-After": String(result.retryAfterSeconds) } : undefined },
