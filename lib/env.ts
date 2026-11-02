@@ -37,9 +37,34 @@ export const publicSiteUrl = resolvePublicSiteUrl();
 /** True when the origin was configured explicitly (not derived from the host). */
 export const publicSiteUrlIsExplicit = Boolean(read("NEXT_PUBLIC_SITE_URL"));
 
-export const supabaseUrl = read("NEXT_PUBLIC_SUPABASE_URL");
-export const supabaseAnonKey = read("NEXT_PUBLIC_SUPABASE_ANON_KEY");
-export const supabaseServiceRoleKey = read("SUPABASE_SERVICE_ROLE_KEY");
+/**
+ * Supabase dashboard URLs are frequently pasted with a trailing slash (and
+ * occasionally without a scheme). Both make every request fail with an opaque
+ * "Invalid URL" error, so the value is normalised once, here.
+ */
+function normalizeSupabaseUrl(value: string | undefined) {
+  if (!value) return undefined;
+  let url = value.trim().replace(/\/+$/, "");
+  if (!url) return undefined;
+  if (!/^https?:\/\//i.test(url)) url = `https://${url}`;
+  try {
+    const parsed = new URL(url);
+    if (!parsed.hostname.includes(".")) return undefined;
+    return `${parsed.protocol}//${parsed.host}`;
+  } catch {
+    return undefined;
+  }
+}
+
+export const supabaseUrl = normalizeSupabaseUrl(read("NEXT_PUBLIC_SUPABASE_URL"));
+
+/**
+ * Current-format keys (`sb_publishable_…`) and the legacy JWT anon key are both
+ * accepted. The server also accepts the new `sb_secret_…` key in place of the
+ * legacy `service_role` JWT.
+ */
+export const supabaseAnonKey = read("NEXT_PUBLIC_SUPABASE_ANON_KEY") ?? read("SUPABASE_ANON_KEY");
+export const supabaseServiceRoleKey = read("SUPABASE_SERVICE_ROLE_KEY") ?? read("SUPABASE_SECRET_KEY");
 export const supabaseBucket = read("SUPABASE_STORAGE_BUCKET") ?? "property-media";
 export const adminSessionSecret = read("ADMIN_SESSION_SECRET");
 
@@ -124,9 +149,10 @@ export function logConfigDiagnostics() {
   diagnosticsLogged = true;
 
   const warnings: string[] = [];
-  if (!process.env.NEXT_PUBLIC_SUPABASE_URL) warnings.push("NEXT_PUBLIC_SUPABASE_URL is not set");
-  if (!process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) warnings.push("NEXT_PUBLIC_SUPABASE_ANON_KEY is not set");
-  if (!process.env.SUPABASE_SERVICE_ROLE_KEY) warnings.push("SUPABASE_SERVICE_ROLE_KEY is not set");
+  if (!supabaseUrl) warnings.push("NEXT_PUBLIC_SUPABASE_URL is missing or not a valid URL");
+  if (!supabaseAnonKey) warnings.push("NEXT_PUBLIC_SUPABASE_ANON_KEY is not set");
+  if (!supabaseServiceRoleKey) warnings.push("SUPABASE_SERVICE_ROLE_KEY is not set (the Studio cannot read or write anything)");
+  if (read("NEXT_PUBLIC_SUPABASE_URL") && !supabaseUrl) warnings.push("NEXT_PUBLIC_SUPABASE_URL could not be parsed");
   if (!adminSessionSecret || adminSessionSecret.length < 32) warnings.push("ADMIN_SESSION_SECRET is missing or shorter than 32 characters");
   if (!publicSiteUrlIsExplicit) warnings.push(`NEXT_PUBLIC_SITE_URL is not set (using ${publicSiteUrl})`);
   if (read("ALLOW_LOCAL_PROVIDER") === "1") warnings.push("ALLOW_LOCAL_PROVIDER is set — remove it in production");

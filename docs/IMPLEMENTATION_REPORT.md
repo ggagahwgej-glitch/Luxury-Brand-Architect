@@ -20,7 +20,7 @@ Single Next.js 15 application containing the public luxury real-estate website *
 | Auth | Supabase Auth (email + password) → owner authorization → bcrypt-hashed 12-digit secret code → signed session cookie |
 | Fonts | `@fontsource` (self-hosted): Cormorant Garamond + Playfair Display (display), Inter Variable (body) |
 | Icons | lucide-react + hand-built brand social icons |
-| Tests | Vitest (37 assertions across 5 suites) |
+| Tests | Vitest (47 assertions across 6 suites) + 36 SQL/RLS checks |
 | CLI | `tsx` scripts for owner-code hashing, storage pruning, backend verification |
 
 ### Directory map
@@ -234,7 +234,8 @@ Changing the hero heading, the accent preset (`imperial_gold` → `champagne`) a
 ### Automated
 
 ```
-npx vitest run        → 37 passing (5 files)
+npx vitest run        → 47 passing (6 files)
+npm run verify:sql    → 36 schema/RLS checks passing
 npx tsc --noEmit      → clean (excluding generated .next/types)
 npm run build         → compiled successfully, 19 routes
 npm run seed:check    → passes in local mode
@@ -471,7 +472,7 @@ or any video would have failed in production.
 | Check | Result |
 | --- | --- |
 | `npx tsc --noEmit` | clean |
-| `npx vitest run` | 37/37 (5 files) |
+| `npx vitest run` | 47/47 (6 files) |
 | `npm run build` with `.env.local` removed and provider vars unset | exit 0 |
 | `ALLOW_LOCAL_PROVIDER=1 npm run build` + `next start` | exit 0, 15 routes served |
 | Public smoke (`/`, `/properties`, `/properties/[slug]`, `/buy`, `/rent`, `/categories`, `/about`, `/contact`, `/settings`, `/admin/login`, `/robots.txt`, `/sitemap.xml`) | all 200 |
@@ -496,3 +497,92 @@ After deploying, confirm in Supabase → Storage → `property-media` → Settin
 CORS that the site origin is allowed for `PUT`/`GET`, otherwise large uploads
 fall back to the 4 MB proxy path (and videos will be refused with a clear
 message rather than failing silently).
+
+## 16. Connecting the client's Supabase project (round 4)
+
+The client supplied a project: `https://aybxmtqozjkakhdefyqq.supabase.co` with
+its **publishable** key. The secret key is intentionally not in the repository;
+it is required before the Studio or the enquiry endpoint can write anything.
+
+> **Environment note:** this build sandbox has no outbound access to
+> `*.supabase.co`, so the live project could not be probed from here. Everything
+> that *can* be verified without the network was verified, and the checks that
+> need the project are packaged as `npm run seed:check` (see §16.4) for the
+> operator to run once, from a machine that can reach Supabase.
+
+### 16.1 The schema was executed for real (not just reviewed)
+
+`npm run verify:sql` (`scripts/verify-sql.mjs`) now boots Postgres 18 in-process
+(PGlite, a WASM build of real Postgres), stubs only the Supabase-owned pieces
+(`auth.users`, `auth.uid()`, `storage.buckets`, `storage.objects`, the
+`anon`/`authenticated`/`service_role` roles) and applies the migrations exactly
+as written, followed by `seed.sql`. **36/36 checks pass**, including:
+
+| Area | Verified |
+| --- | --- |
+| Migrations | 0001, 0002, 0003 and `seed.sql` apply without error |
+| Structure | all 7 tables, RLS enabled on every table, bucket created public with the MIME allow-list |
+| Constraints | invalid status, price ≤ 0, malformed slug and duplicate slug are all rejected |
+| Generated column | `area_display` = `built_up_area` (used by area filters and sorting) |
+| Trigger | `updated_at` is bumped on update |
+| Cover rule | a second cover image is rejected by the partial unique index |
+| RLS (anon) | published rows visible, drafts invisible, `inquiries` unreadable *and* unwritable, settings readable |
+| RLS (auth) | an unauthorised account reads nothing; the authorised owner reads drafts; `is_owner()` only true for them |
+| Provisioning | the SQL printed by `npm run owner:hash` creates the profile **and** the hash |
+
+This is the first time the SQL had actually been executed — it was previously
+reviewed by eye only.
+
+### 16.2 Bugs found and fixed in this round
+
+| # | Bug | Effect | Fix |
+| --- | --- | --- | --- |
+| 1 | `npm run owner:hash` printed SQL that only `update`d `profiles` | On a fresh project the owner row does not exist yet → update touches 0 rows → login answers "not authorised" forever | The SQL now upserts `profiles` (owner + authorised) and then writes the `owner_security` hash; verified in Postgres |
+| 2 | `npm run lint` ran `next lint` with no ESLint config | Interactive prompt hangs/fails in CI | Removed the broken script; the gates are `typecheck`, `test`, `verify:sql`, `build` |
+| 3 | `sharp` was a devDependency | `next/image` production optimisation can fail on hosts that prune dev dependencies | Moved to `dependencies` |
+| 4 | Preview provider duplicated a listing as `slug-2-2`, Supabase provider as `slug-copy` | Inconsistent, ugly URLs between environments | Both now produce `-copy`, then `-copy-2` |
+| 5 | Public slug read relied on RLS alone | A future policy mistake would expose a draft | `getPropertyBySlug` now also filters `is_published = true` unless the Studio asks otherwise |
+| 6 | `listInquiries` reused a postgrest-js builder (builders mutate in place) | The page-clamp path appended `order` twice | Each run builds its own query |
+| 7 | Supabase URL was used verbatim | A trailing slash or missing scheme (common paste error) broke every request with "Invalid URL" | Normalised once in `lib/env.ts` (scheme added, trailing slash trimmed, parsed); diagnostics name the value when it is invalid |
+| 8 | Only the legacy key names were read | New-format keys (`sb_secret_…`) or variant names would be treated as missing | `SUPABASE_SERVICE_ROLE_KEY`/`SUPABASE_SECRET_KEY` and `NEXT_PUBLIC_SUPABASE_ANON_KEY`/`SUPABASE_ANON_KEY` are both accepted; `.env.example` documents the new formats |
+| 9 | A network/config failure during sign-in was reported as "wrong credentials" | The owner retries a *correct* password and locks the account for 15 minutes | Transport/auth-service failures now return a configuration message, not an invalid-credentials one |
+| 10 | `seed:check` printed "✓" for RLS checks when the project was unreachable, after ~90 s of retries | False confidence + noise | Preflight reachability probe (10 s) and "real denial vs transport error" detection |
+
+### 16.3 New tests
+
+`tests/supabase-repository.test.ts` (10 tests) records the PostgREST query the
+Supabase provider builds — the part the JSON preview provider never exercises:
+default filters, published-only slug reads, area sorting on `area_display`,
+search-term escaping (commas/parentheses/quotes/percent), out-of-range page
+clamping, malformed-UUID short-circuit and numeric bounds.
+
+### 16.4 What the operator still has to do (in order)
+
+1. Add the **secret key** to `.env.local` (`SUPABASE_SERVICE_ROLE_KEY`) and to
+   Vercel.
+2. Run the four SQL files (0001 → 0002 → 0003 → seed) in the Supabase SQL editor.
+3. Authentication: keep Email on, **disable public sign-ups**, create the owner
+   user with *Auto Confirm*.
+4. `npm run owner:hash -- <12-digit-code> <owner-email>` and run the printed SQL.
+5. Storage → `property-media` → CORS: allow the site origin (`GET`/`PUT`/`POST`).
+6. `npm run seed:check` until it prints **All checks passed**.
+7. Deploy with the same variables, then sign in at `/admin/login` and create the
+   first listing (the site is intentionally empty until then).
+
+### 16.5 Verified in this round
+
+| Check | Result |
+| --- | --- |
+| `npx tsc --noEmit` | clean |
+| `npx vitest run` | 47/47 (6 files) |
+| `npm run verify:sql` | 36/36 |
+| `npm run build` (no env) and `ALLOW_LOCAL_PROVIDER=1 npm run build` | both exit 0 |
+| Empty database (0 properties, 0 enquiries) | every public page renders designed empty states, no 500 |
+| Admin CRUD | create → duplicate (`-copy`) → publish/unpublish (public 404/200) → delete (404) |
+| Settings round-trip | save hero heading → visible on `/` → restored |
+| Enquiry round-trip | create → status `contacted` → delete |
+| Session | logout → `/admin/dashboard` 307 → `/admin/login` |
+| Upload pipeline | plan endpoint (proxy strategy locally), validation 400, cross-origin 403, multipart upload 200 |
+
+**Still untested** (needs the live project): signed direct-to-Storage uploads,
+Storage CORS, `sb_secret_…` key acceptance, and auth against the real project.

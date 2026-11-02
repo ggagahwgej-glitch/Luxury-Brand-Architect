@@ -31,14 +31,76 @@ The local provider writes to `.data/db.json` (git-ignored). Inside a production 
 - Studio: `/admin/login` (email + password + 12-digit code)
 - The admin link is deliberately absent from the main navigation — it lives on `/settings` and in the footer.
 
-## Production setup
+## Production setup (one Supabase project per client)
 
-1. Create one Supabase project for the client, enable Email auth, create the owner's Auth user.
-2. Apply `supabase/migrations/0001_initial_schema.sql` → `0002_rls_policies.sql` → `0003_storage.sql`, then `supabase/seed.sql`.
-3. Authorize the owner in `profiles` (`role='owner'`, `is_authorized=true`).
-4. Generate the secret-code hash: `npm run owner:hash 741852963147 owner@client.com` and apply the printed SQL.
-5. Set env vars (`DATA_PROVIDER=supabase`, Supabase URL/anon/service-role keys, `ADMIN_SESSION_SECRET`, `SUPABASE_STORAGE_BUCKET`).
-6. `npm run seed:check` → `npm run build` → `npm run start`.
+Everything below is done once per client. `npm run seed:check` at the end tells
+you exactly what is still missing, so you cannot half-deploy by accident.
+
+### 1. Environment
+
+Start from `.env.example` → `.env.local` (never committed):
+
+| Variable | Where it comes from |
+| --- | --- |
+| `DATA_PROVIDER=supabase` | literal |
+| `NEXT_PUBLIC_SUPABASE_URL` | Supabase → Project Settings → API → Project URL |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | publishable key (`sb_publishable_…`) or the legacy anon JWT |
+| `SUPABASE_SERVICE_ROLE_KEY` | **secret** key (`sb_secret_…`) or the legacy `service_role` JWT — server-only |
+| `ADMIN_SESSION_SECRET` | `openssl rand -base64 48` (32+ chars) |
+| `NEXT_PUBLIC_SITE_URL` | final HTTPS origin, no trailing slash |
+| `SUPABASE_STORAGE_BUCKET` | `property-media` (default) |
+
+Do **not** set `ALLOW_LOCAL_PROVIDER` in production, and never prefix a secret
+with `NEXT_PUBLIC_`.
+
+### 2. Schema
+
+Open the SQL editor and run, in this order:
+
+1. `supabase/migrations/0001_initial_schema.sql`
+2. `supabase/migrations/0002_rls_policies.sql`
+3. `supabase/migrations/0003_storage.sql` (creates the public `property-media` bucket)
+4. `supabase/seed.sql` (brand/contact defaults; no demo listings)
+
+Alternatively `supabase db push` if the project is linked to this repo.
+`npm run verify:sql` runs the same migrations against an in-process Postgres and
+checks the constraints, triggers and RLS rules — use it after editing any SQL.
+
+### 3. Auth
+
+- Authentication → Sign In / Providers → Email: enabled.
+- Authentication → Providers → turn **off** "Allow new users to sign up" (the
+  owner is the only account).
+- Authentication → Users → “Add user”, enter the owner email + a strong
+  password, tick **Auto Confirm User** (otherwise the first sign-in fails with
+  "Email not confirmed").
+
+### 4. Owner provisioning
+
+```bash
+npm run owner:hash -- <12-digit-code> owner@client.com
+```
+
+Paste the printed SQL into the Supabase SQL editor. It creates/authorises the
+`profiles` row **and** stores the bcrypt hash of the code in `owner_security`
+(the raw code is never stored).
+
+### 5. Storage CORS (large uploads)
+
+Storage → `property-media` → Settings → CORS: allow the site origin(s) for
+`GET`, `PUT`, `POST` with headers `Content-Type`, `cache-control`, `x-upsert`.
+Without it, files above 4 MB cannot upload directly and videos are refused.
+
+### 6. Verify, then deploy
+
+```bash
+npm run verify:sql    # schema checks, no network needed
+npm run seed:check    # live project: env, tables, RLS, bucket, owner
+npm run build
+```
+
+On Vercel: add every variable from step 1 to the Production environment (Preview
+too if you use it), then deploy. `npm run build` needs no runtime environment.
 
 ## Deployment notes (Vercel / any CI)
 
@@ -84,10 +146,11 @@ is blocked and uploads fall back to the 4 MB proxy path.
 | --- | --- |
 | `npm run dev` / `build` / `start` | Next.js on `0.0.0.0:3000` |
 | `npm run typecheck` | `tsc --noEmit` (strict) |
-| `npm test` | Vitest suite (37 tests) |
-| `npm run owner:hash <code> <email>` | bcrypt hash + SQL for `owner_security` |
+| `npm test` | Vitest suite (47 tests) |
+| `npm run verify:sql` | Apply all migrations to an in-process Postgres and assert constraints + RLS |
+| `npm run owner:hash -- <code> <email>` | bcrypt hash + owner-provisioning SQL |
 | `npm run storage:prune [-- --apply]` | Report/remove orphaned media files |
-| `npm run seed:check` | Verify env, tables, settings row, owner, bucket, anon-leak guards |
+| `npm run seed:check` | Live-project doctor: env, tables, RLS, bucket, owner, auth settings |
 
 ## Structure
 

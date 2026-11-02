@@ -95,6 +95,17 @@ export async function authenticateOwner(input: {
   });
 
   if (signInError || !signIn.user?.id) {
+    // A database/network failure is not a wrong password — say so, otherwise
+    // the owner keeps retyping a correct password and locks the account.
+    if (signInError && /fetch failed|network|timeout|ENOTFOUND|ECONNREFUSED|invalid api key|no api key/i.test(signInError.message)) {
+      console.error("[auth] sign-in could not reach Supabase:", signInError.message);
+      return {
+        ok: false,
+        reason: "config",
+        message:
+          "The authentication service could not be reached. Check the Supabase URL and keys in this deployment, then try again.",
+      };
+    }
     await recordAttempt(input.email, input.ipHash, false);
     return genericFailure; // identical message — no user enumeration
   }

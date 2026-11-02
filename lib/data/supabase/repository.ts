@@ -170,11 +170,11 @@ export class SupabaseRepository implements Repository {
 
   async getPropertyBySlug(slug: string, opts: { includeUnpublished?: boolean } = {}) {
     const client = opts.includeUnpublished ? this.admin : this.reader;
-    const { data, error } = await client
-      .from("properties")
-      .select(PROPERTY_SELECT)
-      .eq("slug", slug)
-      .maybeSingle();
+    let builder = client.from("properties").select(PROPERTY_SELECT).eq("slug", slug);
+    // RLS already hides drafts from the anon client; the explicit filter keeps
+    // the public route fail-closed even if a policy is ever misconfigured.
+    if (!opts.includeUnpublished) builder = builder.eq("is_published", true);
+    const { data, error } = await builder.maybeSingle();
     if (error) fail("Could not load property", error);
     return data ? toProperty(data as unknown as PropertyRow) : null;
   }
@@ -556,19 +556,24 @@ export class SupabaseRepository implements Repository {
     const page = Math.max(1, query.page ?? 1);
     const pageSize = clamp(query.pageSize ?? 10, 1, 50);
     const from = (page - 1) * pageSize;
-    let builder = this.admin.from("inquiries").select("*", { count: "exact" });
-    if (query.status) builder = builder.eq("status", query.status);
-    if (query.propertyId) builder = builder.eq("property_id", query.propertyId);
-    if (query.q) {
-      const term = escapeSearch(query.q);
-      if (term) {
-        builder = builder.or(
-          `name.ilike.%${term}%,phone.ilike.%${term}%,email.ilike.%${term}%,message.ilike.%${term}%,property_title.ilike.%${term}%`,
-        );
+    // postgrest-js builders mutate in place, so every run builds its own query
+    // (the pagination clamp below runs twice).
+    const build = () => {
+      let builder = this.admin.from("inquiries").select("*", { count: "exact" });
+      if (query.status) builder = builder.eq("status", query.status);
+      if (query.propertyId) builder = builder.eq("property_id", query.propertyId);
+      if (query.q) {
+        const term = escapeSearch(query.q);
+        if (term) {
+          builder = builder.or(
+            `name.ilike.%${term}%,phone.ilike.%${term}%,email.ilike.%${term}%,message.ilike.%${term}%,property_title.ilike.%${term}%`,
+          );
+        }
       }
-    }
+      return builder;
+    };
     const run = async (offset: number) => {
-      const response = await builder
+      const response = await build()
         .order("created_at", { ascending: false })
         .range(offset, offset + pageSize - 1);
       if (response.error) fail("Could not load inquiries", response.error);
