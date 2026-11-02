@@ -139,6 +139,10 @@ npm run seed:check    # the real project: env, tables, RLS, bucket, owner, auth
 `seed:check` prints a ✓/✗ line per item and, for every ✗, the exact fix. Do not
 deploy until it says **All checks passed**.
 
+It checks the **Supabase project** whenever the three Supabase values are
+present, even if `.env.local` still says `DATA_PROVIDER=local` (that is the
+preview mode). Pass `-- --local` to check the preview configuration itself.
+
 ---
 
 ## 7. First run

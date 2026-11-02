@@ -50,7 +50,15 @@ function isRealDenial(error: { message?: string } | null | undefined) {
 
 async function main() {
   let failures = 0;
-  const provider = process.env.DATA_PROVIDER ?? (process.env.NEXT_PUBLIC_SUPABASE_URL ? "supabase" : "local");
+  // This is a deployment doctor: if the Supabase values exist, check the real
+  // project even when the local preview provider is the active one.
+  // `npm run seed:check -- --local` checks the preview configuration instead.
+  const hasSupabase = Boolean(
+    process.env.NEXT_PUBLIC_SUPABASE_URL &&
+      (process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? process.env.SUPABASE_ANON_KEY) &&
+      (process.env.SUPABASE_SERVICE_ROLE_KEY ?? process.env.SUPABASE_SECRET_KEY),
+  );
+  const provider = process.argv.includes("--local") ? "local" : hasSupabase ? "supabase" : "local";
 
   console.log(`\nBackend check · provider=${provider}\n`);
 
